@@ -12,3 +12,4 @@ tmp/
 paper/_build/
 output/pdf/*
 !output/pdf/pa_model_backprop_ilc.pdf
+!output/pdf/ilc_dpd_forward_model_theory.pdf

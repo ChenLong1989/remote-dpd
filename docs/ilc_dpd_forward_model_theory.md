@@ -1,10 +1,10 @@
-# From Identity-Jacobian ILC to Iteratively Learned PA-Model Backpropagation
+# From Scalar Residual Injection to Iteration-Wise PA-Model Adjoint Updates
 
 ## Scope
 
 This note gives a compact mathematical description of waveform iterative learning control (ILC) for
-digital predistortion (DPD). It first isolates the limitation of the scalar, identity-Jacobian ILC update,
-then derives an improved update that refits a forward power-amplifier (PA) model at every outer iteration
+digital predistortion (DPD). It first isolates the limitation of the scalar, identity-sensitivity ILC update,
+then formulates a model-adjoint update that refits a forward power-amplifier (PA) model at every outer iteration
 and backpropagates the measured output error through that model.
 
 The discussion is theoretical. It contains no experimental claims. Also, “classical ILC” below means the
@@ -49,7 +49,7 @@ $$
 Let \(J(u)\) denote the real-linear Fréchet derivative of \(F\):
 
 $$
-F(u+h)=F(u)+J(u)h+\mathcal O(\lVert h\rVert^2).
+F(u+h)=F(u)+J(u)h+o(\lVert h\rVert).
 $$
 
 The real adjoint \(J(u)^T\) is defined by
@@ -91,7 +91,7 @@ $$
 \begin{aligned}
 r_{k+1}
 &=d-F(u_k+\mu r_k)\\
-&=r_k-\mu J_k r_k+\mathcal O(\mu^2\lVert r_k\rVert^2),
+&=r_k-\mu J_k r_k+o(\mu\lVert r_k\rVert),
 \end{aligned}
 $$
 
@@ -105,13 +105,15 @@ The update implicitly treats the output error as if it were already expressed in
 Equivalently, it approximates both the inverse learning operator and the gradient transport by a scaled
 identity map.
 
+### 2.1 Linear and scalar convergence conditions
+
 For a fixed linear PA, \(F(u)=Au\), asymptotic convergence requires
 
 $$
 \rho(I-\mu A)<1,
 $$
 
-where \(\rho(\cdot)\) is the spectral radius. For a scalar complex gain \(A=g\), a real positive learning
+where \(\rho(\cdot)\) is the spectral radius. For a nonzero scalar complex gain \(A=g\), a real positive learning
 rate must satisfy
 
 $$
@@ -138,7 +140,7 @@ $$
 
 That condition is not guaranteed for a general complex, nonlinear, or dynamic PA.
 
-### 2.1 Main limitations
+### 2.2 Main limitations
 
 1. **Direction error.** Phase distortion or a negative local AM/AM slope can make
    \(\langle r_k,J_k r_k\rangle_{\mathbb R}\le 0\). The identity update can then be orthogonal to, or point
@@ -154,8 +156,8 @@ That condition is not guaranteed for a general complex, nonlinear, or dynamic PA
 4. **Iteration-dependent nonlinearity.** The Jacobian changes with \(u_k\). A learning rate that is stable
    around one envelope region need not be stable after the waveform moves to another region.
 
-5. **Saturation and infeasibility.** In deep saturation, \(J_k\) may approach zero. Classical ILC still
-   injects \(\mu r_k\), even though the PA cannot produce the requested output change. If
+5. **Saturation and infeasibility.** In deep saturation, \(J_k\) may become rank deficient or develop very
+   small singular values. Classical ILC still injects \(\mu r_k\) along locally insensitive directions. If
    \(d\notin F(\mathcal U)\), then
 
    $$
@@ -173,10 +175,44 @@ These are limitations of the identity-Jacobian baseline, not impossibility state
 ILC. A known plant inverse, an instantaneous complex gain, or a frequency-dependent learning filter can
 correct some of them when its structural assumptions are valid.
 
-## 3. An iteratively learned forward PA model
+### 2.3 Instantaneous gain as a diagonal secant preconditioner
 
-The improved method estimates the missing local PA geometry from the latest measured pair \((u_k,y_k)\).
-At each outer ILC iteration, fit a forward model
+For nonzero input samples, instantaneous-gain ILC estimates
+
+$$
+\widehat g_k[n]=\frac{y_k[n]}{u_k[n]},
+\qquad
+\widehat D_k=\operatorname{diag}(\widehat g_k[n]),
+$$
+
+and a damped diagonal update is
+
+$$
+\delta_k=
+\left(\widehat D_k^H\widehat D_k+\lambda I\right)^{-1}
+\widehat D_k^H r_k,
+\qquad \lambda>0.
+$$
+
+This is a diagonal secant preconditioner, not the full differential inverse of a general nonlinear PA. For
+\(f(u)=a(\varrho)u\), \(\varrho=|u|>0\),
+
+$$
+Df(u)[h]
+=\left(a(\varrho)+\frac{\varrho}{2}a'(\varrho)\right)h
++\frac{a'(\varrho)u^2}{2\varrho}\,\overline h.
+$$
+
+The ratio \(y/u=a(\varrho)\) omits the amplitude-dependent differential terms, the conjugate path, and all
+memory coupling; division at low amplitude also needs thresholding. Nevertheless, instantaneous gain can be
+highly effective for approximately memoryless multiplicative distortion and is not assumed weaker than the
+forward-model method.
+
+## 3. An iteration-wise fitted forward PA model
+
+Backpropagation through a fitted forward PA model has established precedents. In the waveform-level
+construction considered here, the model-adjoint method estimates the missing local PA geometry from the
+latest measured pair \((u_k,y_k)\) and refits a forward model at each outer ILC iteration:
 
 $$
 \widehat F_k(u)=\widehat F(u;\widehat\theta_k),
@@ -188,12 +224,13 @@ $$
 \widehat\theta_k
 =\arg\min_\theta
 \left\lVert \widehat F(u_k;\theta)-y_k\right\rVert_2^2
-+\rho\lVert\theta\rVert_2^2.
++\gamma\lVert\theta\rVert_2^2.
 $$
 
-The fitted parameters \(\widehat\theta_k\) are frozen while computing iteration \(k\)'s update. Gradients
-are not propagated through the regression solver, measurement process, delay estimator, or calibration
-estimator. The model is refitted only after a new PA input-output pair has been observed.
+The fitted parameters \(\widehat\theta_k\) and envelope scale are frozen while computing iteration \(k\)'s
+update. Gradients are not propagated through the regression solver, measurement process, envelope-scale
+estimator, delay estimator, or calibration estimator. The model is refitted only after a new PA input-output
+pair has been observed.
 
 This separation produces two nested loops:
 
@@ -225,7 +262,8 @@ $$
 
 ### 4.1 Memory-polynomial example
 
-For a circular memory polynomial,
+For a circular memory polynomial with positive odd orders
+\(\mathcal P\subset\{1,3,5,\ldots\}\),
 
 $$
 \widehat F_k(u)[n]
@@ -245,7 +283,7 @@ $$
 the real-linear differential has both direct and conjugate terms:
 
 $$
-D\phi_p(z)[h]=a_p(z)h+b_p(z)h^*,
+D\phi_p(z)[h]=a_p(z)h+b_p(z)\overline h,
 $$
 
 with
@@ -263,14 +301,14 @@ b_p(z)=c\frac{p-1}{2}
 \left(\frac{|z|}{s}\right)^{p-3}.
 $$
 
-For \(p=1\), \(b_p(z)=0\). After summing the orders at each delay into coefficient arrays \(a_m\) and
-\(b_m\), the JVP is
+For \(p=1\), \(b_p(z)=0\); at \(z=0\), use the continuous extension \(b_p(0)=0\). After summing the
+orders at each delay into coefficient arrays \(a_m\) and \(b_m\), the JVP is
 
 $$
 \widehat J_k h
 =\sum_m\left[
 a_m\odot\operatorname{roll}(h,m)
-+b_m\odot\operatorname{roll}(h,m)^*
++b_m\odot\overline{\operatorname{roll}(h,m)}
 \right].
 $$
 
@@ -279,7 +317,7 @@ The corresponding real adjoint is
 $$
 \widehat J_k^T v
 =\sum_m\operatorname{roll}\!\left(
-a_m^*\odot v+b_m\odot v^*,-m
+\overline{a_m}\odot v+b_m\odot\overline v,-m
 \right).
 $$
 
@@ -296,7 +334,8 @@ $$
 \delta_k^{\mathrm{VJP}}
 =\eta\widehat J_k^T r_k,
 \qquad
-u_{k+1}=u_k+\delta_k^{\mathrm{VJP}}.
+u_{k+1}=u_k+\delta_k^{\mathrm{VJP}},
+\qquad \eta>0.
 $$
 
 If \(\widehat J_k=I\), this reduces exactly to scalar linear ILC with \(\eta=\mu\). The update is the
@@ -310,13 +349,17 @@ D\mathcal L(u_k)[\delta_k^{\mathrm{VJP}}]
 =-\eta\lVert J_k^T r_k\rVert_2^2<0
 $$
 
-whenever the true gradient is nonzero.
+whenever the true gradient is nonzero. This negative directional derivative guarantees actual decrease only
+for a sufficiently small finite step; it is not a global or arbitrary-step guarantee.
 
 Let the true Jacobian be
 
 $$
 J_k=\widehat J_k+E_k.
 $$
+
+Here \(\lVert E_k\rVert_2\) is the induced operator 2-norm of the \(2N\times2N\) real representation of
+the real-linear map \(E_k\).
 
 The true first-order loss change along the raw VJP step is
 
@@ -349,7 +392,7 @@ $$
 This inequality makes the model-quality requirement explicit. It also shows why raw VJP can fail when the
 learned gradient is small: even modest Jacobian error can dominate it.
 
-### 5.2 Damped Gauss--Newton / Levenberg--Marquardt update
+### 5.2 Damped Gauss-Newton / Levenberg-Marquardt update
 
 Raw gradient descent still inherits poor Jacobian scaling. A better local step minimizes the regularized
 linearized residual:
@@ -476,7 +519,7 @@ $$
 to either
 
 $$
-\underbrace{\delta_k=\eta\widehat J_k^T r_k}_{\text{learned gradient transport}}
+\underbrace{\delta_k=\eta\widehat J_k^T r_k}_{\text{model-adjoint transport}}
 $$
 
 or
@@ -489,8 +532,8 @@ $$
 $$
 
 This directly addresses phase rotation, unequal local slope, and memory coupling when the forward model is
-locally accurate. Iterative refitting allows the derivative to follow the waveform as it moves through the PA
-operating region.
+locally accurate. Iterative refitting allows the fitted derivative to track the waveform as it moves through
+the PA operating region.
 
 The method remains local and model-dependent:
 
@@ -503,10 +546,12 @@ The method remains local and model-dependent:
   parameterized DPD identification stage; and
 - if \(d\notin F(\mathcal U)\), no gradient or second-order approximation can make the target reachable.
 
-In particular, at ideal hard saturation \(J_k=0\). If the learned forward model faithfully represents that
-local slope, then \(\widehat J_k=0\), so both the true gradient and the right-hand side of the LM equation are
-zero. Positive damping gives \(\delta_k=0\): this is a safe indication of local unresponsiveness, not a
-recovery of the unreachable desired waveform.
+In saturation, \(J_k\) may become rank deficient. A residual component in \(\ker(J_k^T)\) cannot be reduced
+to first order. In the extreme locally constant idealization \(J_k=0\), if the learned forward model
+faithfully represents that behavior, then \(\widehat J_k=0\) and the right-hand side of the LM equation
+vanishes. Positive damping gives \(\delta_k=0\): this is a safe indication of local unresponsiveness, not a
+recovery of the unreachable desired waveform. A small learned gradient can also result from model mismatch,
+so a local saturation indicator is not proof of global unreachability.
 
 ## 8. Compact algorithm statement
 
@@ -520,9 +565,9 @@ At each outer iteration \(k\):
 6. Accept the first safe predicted-decrease candidate; otherwise hold or use an explicit fallback.
 7. Refit only after the next physical PA measurement.
 
-The conceptual improvement is therefore not merely “adding a model.” It replaces an implicit identity
-Jacobian with an iteratively identified local differential, uses the adjoint to transport the measured error
-to the PA input, and regularizes that transport before the next ILC experiment.
+The conceptual improvement is therefore not merely “adding a model.” It replaces the identity-sensitivity
+approximation with the differential of an iteration-wise fitted forward model, uses the adjoint to transport
+the measured error to the PA input, and regularizes that transport before the next ILC experiment.
 
 This construction combines established PA modeling, backpropagation, and ILC ingredients in a specific
 waveform-level loop. It does not claim the first use of PA forward models, PA Jacobians, memory

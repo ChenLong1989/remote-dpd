@@ -1,0 +1,637 @@
+\documentclass[10pt,a4paper]{article}
+% Build from the repository root with:
+% tectonic -X compile docs/ilc_dpd_forward_model_theory.tex --outdir output/pdf
+
+\usepackage[margin=22mm,headheight=20pt,headsep=7mm,footskip=11mm]{geometry}
+\usepackage{microtype}
+\usepackage{fontspec}
+\usepackage{amsmath}
+\usepackage{unicode-math}
+\usepackage{enumitem}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{booktabs}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{xurl}
+\usepackage{hyperref}
+
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf
+]
+\setmathfont{texgyretermes-math.otf}
+
+\definecolor{TitleBlue}{HTML}{17365D}
+\definecolor{LinkBlue}{HTML}{1F5A94}
+\definecolor{RuleGray}{HTML}{B8C2CC}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=LinkBlue,
+  urlcolor=LinkBlue,
+  citecolor=LinkBlue,
+  pdftitle={From Scalar Residual Injection to Iteration-Wise PA-Model Adjoint Updates},
+  pdfauthor={Remote DPD Project},
+  pdfsubject={A mathematical note on waveform ILC for digital predistortion},
+  pdfkeywords={digital predistortion, iterative learning control, PA model, VJP, Gauss-Newton, Levenberg-Marquardt}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{TitleBlue}Forward-Model Backpropagation for ILC DPD}
+\fancyhead[R]{\small\color{TitleBlue}Mathematical Note}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{RuleGray}\leaders\hrule height \headrulewidth\hfill}}
+
+\titleformat{\section}
+  {\large\bfseries\color{TitleBlue}}
+  {\thesection}{0.65em}{}
+\titleformat{\subsection}
+  {\normalsize\bfseries\color{TitleBlue}}
+  {\thesubsection}{0.65em}{}
+\titlespacing*{\section}{0pt}{1.6em}{0.55em}
+\titlespacing*{\subsection}{0pt}{1.2em}{0.4em}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em plus 0.1em minus 0.1em}
+\setlist[itemize]{leftmargin=1.6em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=1.8em,itemsep=0.3em,topsep=0.35em}
+\allowdisplaybreaks[2]
+\raggedbottom
+\clubpenalty=10000
+\widowpenalty=10000
+
+\newcommand{\Rinner}[2]{\left\langle #1,#2\right\rangle_{\mathbb R}}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert_2}
+\newcommand{\rms}{\operatorname{RMS}}
+\newcommand{\roll}{\operatorname{roll}}
+\newcommand{\Fhat}{\widehat F}
+\newcommand{\Jhat}{\widehat J}
+
+\title{\vspace{-1.2cm}\color{TitleBlue}\bfseries
+  From Scalar Residual Injection to Iteration-Wise\\[0.18em]
+  PA-Model Adjoint Updates}
+\author{\large A Mathematical Note on Waveform Digital Predistortion}
+\date{August 2026}
+
+\begin{document}
+
+\maketitle
+\vspace{-1.2em}
+\begin{center}
+  \color{RuleGray}\rule{0.84\textwidth}{0.7pt}
+\end{center}
+
+\begin{abstract}
+This note formulates waveform iterative learning control (ILC) for digital predistortion (DPD) as a
+constrained inverse problem. It shows that scalar residual injection implicitly replaces the local
+power-amplifier (PA) sensitivity by a scaled identity, derives the resulting convergence and descent
+limitations, and then formulates an iteration-wise forward-model alternative. The measured residual is
+backpropagated through a frozen real-linear PA-model adjoint; a damped Gauss-Newton or
+Levenberg-Marquardt step supplies regularized local inversion. The presentation is theoretical and
+contains no experimental claims.
+\end{abstract}
+
+\tableofcontents
+\vspace{0.4em}
+
+\section{Scope and notation}
+
+Throughout this note, \emph{classical scalar ILC} denotes the waveform update that directly injects a
+scaled output residual into the PA input. This terminology does not cover the full lifted-domain ILC
+literature, in which a designed learning operator, robustness filter, identified plant inverse, or
+instantaneous-gain preconditioner may be used. The limitation studied here is therefore not repetition-domain
+learning itself, but the scalar identity-sensitivity approximation
+\cite{chani2016ilc,schoukens2017preinverse}.
+
+Let
+\begin{itemize}
+  \item $u\in\mathbb C^N$ be the finite waveform applied to the PA;
+  \item $F:\mathbb C^N\rightarrow\mathbb C^N$ be the calibrated PA input-output operator;
+  \item $d\in\mathbb C^N$ be the desired PA output;
+  \item $y_k=F(u_k)$ be the measured output at outer iteration $k$; and
+  \item $r_k=d-y_k$ be the output tracking residual.
+\end{itemize}
+
+Some implementation descriptions instead use $e_k=y_k-d=-r_k$. This note retains $r_k=d-y_k$
+throughout, so the classical update has the familiar plus-residual form.
+
+The waveform-level inverse problem is
+\begin{equation}
+  \min_{u\in\mathcal U}\;\mathcal L(u),
+  \qquad
+  \mathcal L(u)
+  =\frac12\norm{F(u)-d}^{2}
+  =\frac12\norm{r(u)}^{2},
+  \label{eq:inverse-problem}
+\end{equation}
+where $\mathcal U$ is the feasible set imposed by peak, RMS, PAPR, and hardware limits.
+
+The derivation assumes a fixed input/output coordinate system. If the measured output is independently
+renormalized at every iteration, the effective operator is an iteration-dependent composition of the PA and
+the calibration map rather than the physical PA map alone.
+
+A nonlinear RF PA is generally not holomorphic as a complex map because its basis functions depend on
+$|u|$. We therefore treat $\mathbb C^N$ as $\mathbb R^{2N}$, with real inner product
+\begin{equation}
+  \Rinner{a}{b}=\operatorname{Re}(a^H b).
+  \label{eq:real-inner-product}
+\end{equation}
+Let $J(u)$ denote the real-linear Fr\'echet derivative of $F$:
+\begin{equation}
+  F(u+h)=F(u)+J(u)h+o(\norm{h}).
+\end{equation}
+Its real adjoint $J(u)^T$ is defined by
+\begin{equation}
+  \Rinner{v}{J(u)h}=\Rinner{J(u)^T v}{h}.
+  \label{eq:real-adjoint}
+\end{equation}
+Because $r(u)=d-F(u)$, the directional derivative of the loss is
+\begin{equation}
+  D\mathcal L(u)[h]
+  =-\Rinner{r(u)}{J(u)h}
+  =\Rinner{-J(u)^T r(u)}{h}.
+\end{equation}
+Hence the true input-space gradient is
+\begin{equation}
+  \boxed{\nabla\mathcal L(u)=-J(u)^T r(u).}
+  \label{eq:true-gradient}
+\end{equation}
+The output residual is therefore not, in general, an input correction. It must be transported through the
+PA adjoint before it becomes a gradient in the input coordinates.
+
+\section{Classical scalar ILC as an identity-sensitivity approximation}
+
+The scalar linear ILC update is
+\begin{equation}
+  u_{k+1}=u_k+\mu r_k,
+  \qquad \mu>0.
+  \label{eq:classical-ilc}
+\end{equation}
+Using a first-order PA expansion at $u_k$ gives
+\begin{align}
+  r_{k+1}
+  &=d-F(u_k+\mu r_k) \notag\\
+  &=r_k-\mu J_k r_k
+    +o\!\left(\mu\norm{r_k}\right),
+  \label{eq:local-residual-dynamics}
+\end{align}
+where $J_k=J(u_k)$. Thus
+\begin{equation}
+  r_{k+1}\approx (I-\mu J_k)r_k.
+\end{equation}
+Equation~\eqref{eq:classical-ilc} implicitly treats the output residual as if it were already expressed in
+the PA input coordinates. Equivalently, it approximates the local inverse learning operator, or the
+adjoint sensitivity after step scaling, by a scalar multiple of the identity.
+
+\subsection{Linear and scalar convergence conditions}
+
+For a fixed linear PA $F(u)=Au$, asymptotic convergence requires
+\begin{equation}
+  \rho(I-\mu A)<1,
+  \label{eq:spectral-condition}
+\end{equation}
+where $\rho(\cdot)$ is the spectral radius. For a nonzero scalar complex gain $A=g$, a real positive learning rate
+must satisfy
+\begin{equation}
+  |1-\mu g|<1
+  \quad\Longleftrightarrow\quad
+  0<\mu<\frac{2\operatorname{Re}(g)}{|g|^2}.
+  \label{eq:complex-gain-condition}
+\end{equation}
+Such a $\mu$ exists only when $\operatorname{Re}(g)>0$. A sufficiently large PA phase rotation can therefore
+turn the nominal correction into a non-contractive direction. For example, if $g=\mathrm j$, then
+$|1-\mathrm j\mu|>1$ for every $\mu>0$.
+
+The same conclusion follows directly from the loss derivative. Along the classical step $h=\mu r_k$,
+\begin{equation}
+  D\mathcal L(u_k)[\mu r_k]
+  =-\mu\Rinner{r_k}{J_k r_k}.
+  \label{eq:classical-descent-test}
+\end{equation}
+The step is a first-order descent direction only if
+\begin{equation}
+  \Rinner{r_k}{J_k r_k}>0.
+  \label{eq:descent-condition}
+\end{equation}
+This condition is not guaranteed for a general complex, nonlinear, or dynamic PA.
+
+\subsection{Main limitations}
+
+\begin{enumerate}
+  \item \textbf{Direction error.} Phase distortion or negative local AM/AM slope can make
+  $\Rinner{r_k}{J_k r_k}\leq 0$. Identity transport can then be orthogonal to, or point against, the true
+  descent direction.
+
+  \item \textbf{Scale error.} If the local PA slope is small, the output changes little although $\mu r_k$
+  continues to accumulate at the input. If the slope is large, the same fixed $\mu$ can overshoot. One scalar
+  cannot simultaneously invert widely different singular directions.
+
+  \item \textbf{Memory and cross-sample coupling.} With PA memory, $J_k$ is not diagonal. An error at one
+  time index may require corrections at several input indices. Identity transport ignores this coupling.
+
+  \item \textbf{Iteration-dependent nonlinearity.} The Jacobian changes with $u_k$. A learning rate that is
+  stable in one envelope region need not remain stable after the waveform moves to another region.
+
+  \item \textbf{Saturation and infeasibility.} In deep saturation, $J_k$ may become rank deficient or develop
+  very small singular values. Scalar ILC still injects $\mu r_k$ along locally insensitive directions. If
+  $d\notin F(\mathcal U)$, then, for compact $\mathcal U$ and continuous $F$,
+  \begin{equation}
+    \min_{u\in\mathcal U}\norm{F(u)-d}>0.
+    \label{eq:unreachable-target}
+  \end{equation}
+  No ILC law can drive such an error to zero.
+
+  \item \textbf{Noise integration.} If $y_k=F(u_k)+n_k$, the classical update directly contains
+  $-\mu n_k$. Repetition can accumulate capture noise unless averaging, filtering, regularization, or a
+  stopping rule is used.
+\end{enumerate}
+
+These are limitations of the identity-Jacobian baseline, not impossibility statements about every form of
+ILC. A known plant inverse, instantaneous complex gain, or frequency-dependent learning filter can correct
+some of them when its structural assumptions hold.
+
+\subsection{Instantaneous gain as a diagonal secant preconditioner}
+
+For nonzero input samples, instantaneous-gain ILC estimates a pointwise secant gain
+\begin{equation}
+  \widehat g_k[n]=\frac{y_k[n]}{u_k[n]},
+  \qquad
+  \widehat D_k=\operatorname{diag}(\widehat g_k[n]).
+  \label{eq:instantaneous-gain}
+\end{equation}
+A damped diagonal update is
+\begin{equation}
+  \delta_k
+  =\left(\widehat D_k^H\widehat D_k+\lambda I\right)^{-1}
+   \widehat D_k^H r_k,
+  \qquad \lambda>0.
+  \label{eq:instantaneous-update}
+\end{equation}
+This is a diagonal secant preconditioner, not the full differential inverse of a general nonlinear PA. To
+see the distinction, let $f(u)=a(\varrho)u$ with $\varrho=|u|>0$. Its real-linear differential is
+\begin{equation}
+  Df(u)[h]
+  =\left(a(\varrho)+\frac{\varrho}{2}a'(\varrho)\right)h
+  +\frac{a'(\varrho)u^2}{2\varrho}\,\overline h.
+  \label{eq:secant-versus-differential}
+\end{equation}
+The ratio $y/u=a(\varrho)$ omits the amplitude-dependent differential terms, the conjugate path, and all
+cross-sample memory coupling. Low-amplitude division also requires thresholding. Nevertheless,
+instantaneous gain can be highly effective for approximately memoryless multiplicative distortion and is not
+assumed to be weaker than the forward-model method \cite{chani2016ilc,wei2026icg}.
+
+\section{Iteration-wise forward PA modeling}
+
+Backpropagation through a fitted forward PA model has established precedents
+\cite{tarver2019backprop,loebl2023memorybackprop}. In the waveform-level construction considered here, the
+model-adjoint scheme estimates the missing local PA geometry from the latest measured pair $(u_k,y_k)$ and
+refits a differentiable forward model at every outer ILC iteration:
+\begin{equation}
+  \Fhat_k(u)=\Fhat(u;\widehat\theta_k),
+\end{equation}
+for example by regularized regression,
+\begin{equation}
+  \widehat\theta_k
+  =\arg\min_\theta
+  \left\|\Fhat(u_k;\theta)-y_k\right\|_2^2
+  +\gamma\norm{\theta}^{2}.
+  \label{eq:model-fit}
+\end{equation}
+The model regularization $\gamma$ is distinct from the update damping introduced later.
+
+The fitted parameters $\widehat\theta_k$ and envelope scale are frozen while iteration $k$'s update is
+computed. Gradients are not propagated through the regression solver, measurement process, envelope scale,
+delay estimator, or calibration estimator. The model is refitted only after a new PA input-output pair has
+been observed.
+
+This yields two nested loops:
+\begin{enumerate}
+  \item an \emph{identification loop}, which estimates a local forward PA model from the current measurement;
+  \item a \emph{learning loop}, which uses the frozen model derivative to transport the measured residual
+  back to the PA input.
+\end{enumerate}
+The residual remains the physical measurement residual $r_k=d-y_k$; it is not replaced by a model residual.
+
+\section{Real-linear backpropagation through the PA model}
+
+Let
+\begin{equation}
+  \Jhat_k=D\Fhat_k(u_k)
+\end{equation}
+be the frozen model derivative. Its Jacobian-vector product (JVP) maps an input perturbation to an output
+perturbation, $h\mapsto\Jhat_kh$, and its vector-Jacobian product (VJP) transports an output cotangent back
+to the input, $v\mapsto\Jhat_k^Tv$.
+
+\subsection{Memory-polynomial example}
+
+Consider a circular memory polynomial \cite{morgan2006gmp}
+\begin{equation}
+  \Fhat_k(u)[n]
+  =\sum_{m=0}^{M-1}\sum_{p\in\mathcal P}
+  c_{p,m}\,z_m[n]
+  \left(\frac{|z_m[n]|}{s}\right)^{p-1},
+  \qquad
+  z_m[n]=u[(n-m)\bmod N].
+  \label{eq:memory-polynomial}
+\end{equation}
+Here $\mathcal P\subset\{1,3,5,\ldots\}$ is a set of positive odd orders. For one basis function
+\begin{equation}
+  \phi_p(z)=c\,z\left(\frac{|z|}{s}\right)^{p-1},
+\end{equation}
+the real-linear differential contains both direct and conjugate terms:
+\begin{equation}
+  D\phi_p(z)[h]=a_p(z)h+b_p(z)\overline h,
+  \label{eq:basis-differential}
+\end{equation}
+where
+\begin{align}
+  a_p(z)
+  &=c\frac{p+1}{2}
+    \left(\frac{|z|}{s}\right)^{p-1}, \\
+  b_p(z)
+  &=c\frac{p-1}{2}
+    \left(\frac{z}{s}\right)^2
+    \left(\frac{|z|}{s}\right)^{p-3},
+  \qquad p>1.
+\end{align}
+For $p=1$, define $b_1(z)=0$ explicitly; at $z=0$, use the continuous extension $b_p(0)=0$. After summing
+polynomial orders at each delay into arrays $a_m$ and $b_m$, the JVP is
+\begin{equation}
+  \Jhat_k h
+  =\sum_m\left[
+    a_m\odot\roll(h,m)
+    +b_m\odot\overline{\roll(h,m)}
+  \right].
+  \label{eq:jvp}
+\end{equation}
+The corresponding real adjoint is
+\begin{equation}
+  \Jhat_k^T v
+  =\sum_m\roll\!\left(
+    \overline{a_m}\odot v+b_m\odot\overline v,-m
+  \right).
+  \label{eq:vjp}
+\end{equation}
+The conjugate contribution in Eq.~\eqref{eq:vjp} is $b_m\odot\overline v$, not
+$\overline{b_m}\odot\overline v$. An ordinary complex-linear Hermitian derivative would omit this path and generally
+produce the wrong gradient.
+
+\section{Backpropagated learning laws}
+
+\subsection{Raw model-adjoint update}
+
+Replacing identity transport by the learned adjoint gives
+\begin{equation}
+  \delta_k^{\mathrm{VJP}}=\eta\Jhat_k^T r_k,
+  \qquad
+  u_{k+1}=u_k+\delta_k^{\mathrm{VJP}},
+  \qquad \eta>0.
+  \label{eq:raw-vjp}
+\end{equation}
+If $\Jhat_k=I$, this reduces exactly to scalar linear ILC with $\eta=\mu$. With an exact derivative,
+$\Jhat_k=J_k$, the first-order loss change is
+\begin{equation}
+  D\mathcal L(u_k)[\delta_k^{\mathrm{VJP}}]
+  =-\eta\norm{J_k^T r_k}^{2}<0
+  \label{eq:exact-vjp-descent}
+\end{equation}
+whenever the true gradient is nonzero. This negative directional derivative guarantees actual decrease only
+for a sufficiently small finite step; it is not a global or arbitrary-step guarantee.
+
+With derivative error $J_k=\Jhat_k+E_k$,
+\begin{equation}
+  D\mathcal L(u_k)[\delta_k^{\mathrm{VJP}}]
+  =-\eta\Rinner{J_k^T r_k}{\Jhat_k^T r_k}.
+\end{equation}
+Here $\|E_k\|_2$ is the operator 2-norm induced by the $2N\times2N$ real representation of the real-linear
+map $E_k$.
+Furthermore,
+\begin{align}
+  \Rinner{J_k^T r_k}{\Jhat_k^T r_k}
+  &\geq \norm{\Jhat_k^T r_k}
+  \left(
+    \norm{\Jhat_k^T r_k}-\|E_k\|_2\norm{r_k}
+  \right).
+  \label{eq:model-error-bound}
+\end{align}
+A sufficient local descent condition is therefore
+\begin{equation}
+  \|E_k\|_2\norm{r_k}<\norm{\Jhat_k^T r_k}.
+  \label{eq:model-quality-condition}
+\end{equation}
+The learned adjoint is thus a surrogate gradient. Backpropagation through a fitted model does not by itself
+establish that the direction equals the true PA gradient.
+
+\subsection{Damped Gauss-Newton / Levenberg-Marquardt update}
+
+Raw gradient descent still inherits poor Jacobian scaling. A regularized local step instead solves
+\begin{equation}
+  \delta_k
+  =\arg\min_\delta
+  \frac12\norm{r_k-\Jhat_k\delta}^{2}
+  +\frac{\lambda_k}{2}\norm{\delta}^{2},
+  \qquad \lambda_k>0.
+  \label{eq:lm-objective}
+\end{equation}
+Its first-order condition is the damped normal equation
+\begin{equation}
+  \boxed{
+  \left(\Jhat_k^T\Jhat_k+\lambda_k I\right)\delta_k
+  =\Jhat_k^T r_k.}
+  \label{eq:lm-normal-equation}
+\end{equation}
+The normal operator is positive definite in the real geometry because, for every nonzero $q$,
+\begin{equation}
+  \Rinner{q}{(\Jhat_k^T\Jhat_k+\lambda_k I)q}
+  =\norm{\Jhat_kq}^{2}+\lambda_k\norm{q}^{2}>0.
+  \label{eq:normal-spd}
+\end{equation}
+Consequently, the step can be computed by matrix-free conjugate gradients using only
+\begin{equation}
+  q\longmapsto\Jhat_kq
+  \longmapsto\Jhat_k^T(\Jhat_kq)+\lambda_kq,
+\end{equation}
+without constructing the full $2N\times2N$ real Jacobian. The same frozen linearization must be used within
+one CG solve so that the normal operator remains symmetric positive definite.
+
+If $\Jhat_k=U\Sigma V^T$ is the singular-value decomposition of its real representation, then
+\begin{equation}
+  \delta_k
+  =V\,\operatorname{diag}\!\left(
+    \frac{\sigma_i}{\sigma_i^2+\lambda_k}
+  \right)U^T r_k.
+  \label{eq:lm-svd}
+\end{equation}
+Well-observed directions are approximately inverted, whereas weak directions are suppressed. Indeed,
+\begin{equation}
+  0\leq\frac{\sigma}{\sigma^2+\lambda_k}
+  \leq\frac{1}{2\sqrt{\lambda_k}}.
+\end{equation}
+
+Two limiting cases clarify the connection to simpler ILC laws:
+\begin{itemize}
+  \item If $\Jhat_k=I$, then $\delta_k=r_k/(1+\lambda_k)$, a damped scalar ILC step.
+  \item For a memoryless complex gain $g$,
+  \begin{equation}
+    \delta_k=\frac{g^*}{|g|^2+\lambda_k}r_k,
+  \end{equation}
+  which is a Tikhonov-regularized complex-gain inverse.
+\end{itemize}
+
+For a perfect linear model $F(u)=Au$, the new residual is
+\begin{equation}
+  r_{k+1}
+  =\left[I-A(A^TA+\lambda I)^{-1}A^T\right]r_k.
+\end{equation}
+Along each nonzero singular direction, the contraction factor is
+\begin{equation}
+  \frac{\lambda}{\sigma_i^2+\lambda}.
+\end{equation}
+With $\lambda=0$ and invertible $A$, the exact linear inverse is recovered in one idealized step.
+
+\section{Measurement-anchored prediction and safeguards}
+
+A forward model can have static bias at the current waveform. Using $\Fhat_k(u_k+\delta)$ directly would
+mistake that bias for a measured output change. Instead use the anchored prediction
+\begin{equation}
+  \widetilde y_k(\delta)
+  =y_k+\Fhat_k(u_k+\delta)-\Fhat_k(u_k).
+  \label{eq:anchored-prediction}
+\end{equation}
+It satisfies $\widetilde y_k(0)=y_k$ exactly while retaining the model-predicted nonlinear increment. A
+candidate can be accepted only when, for example,
+\begin{equation}
+  \frac12\norm{d-\widetilde y_k(\delta)}^{2}
+  <\frac12\norm{r_k}^{2}.
+  \label{eq:anchored-acceptance}
+\end{equation}
+This is a predicted-decrease condition under the model, not a guarantee of monotone decrease for the
+physical PA.
+
+The update should additionally obey a trust region and the feasible input set:
+\begin{equation}
+  \rms(\delta)\leq\tau\rms(u_k),
+  \qquad
+  u_k+\delta\in\mathcal U.
+  \label{eq:safeguards}
+\end{equation}
+If the full step is rejected, test $\beta^b\delta$, $0<\beta<1$, until a candidate passes the anchored
+decrease and input constraints. If none passes, hold $u_k$. A model-fit failure should likewise produce an
+explicit hold or declared scalar-ILC fallback rather than silently reusing an unrelated model.
+
+These safeguards bound the consequences of local model error. They do not create an inverse in saturation,
+guarantee global convergence, or ensure branch switching in a nonmonotone PA.
+
+\section{Saturation, reachability, and remaining limitations}
+
+The learned model changes the update from identity transport,
+\begin{equation}
+  \delta_k=\mu r_k,
+\end{equation}
+to model-adjoint transport,
+\begin{equation}
+  \delta_k=\eta\Jhat_k^Tr_k,
+\end{equation}
+or a regularized local inverse, Eq.~\eqref{eq:lm-normal-equation}. This directly addresses phase rotation,
+unequal local slope, and memory coupling when the forward model is locally accurate. Iterative refitting lets
+the fitted derivative track the waveform through the PA operating region.
+
+The method remains local and model-dependent:
+\begin{itemize}
+  \item it has no global convergence guarantee for a nonconvex PA inverse;
+  \item model mismatch can rotate the learned gradient away from the true gradient;
+  \item a poorly excited waveform cannot identify unobserved model directions;
+  \item changing calibration across iterations changes the effective operator being learned;
+  \item capture noise affects both the residual and the fitted model;
+  \item the optimized variable is one finite, repeatable waveform, so arbitrary traffic requires a separate
+  parameterized DPD identification stage; and
+  \item if $d\notin F(\mathcal U)$, no gradient or second-order approximation can make the target reachable.
+\end{itemize}
+
+In saturation, $J_k$ may become rank deficient. A residual component in $\ker(J_k^T)$ cannot be reduced to
+first order. In the extreme locally constant idealization $J_k=0$, if the learned model faithfully represents
+that behavior, then $\Jhat_k=0$ and the right-hand side of Eq.~\eqref{eq:lm-normal-equation} vanishes. Positive
+damping gives $\delta_k=0$. This is a safe indication of local unresponsiveness, not recovery of the
+unreachable desired waveform. Conversely, a small learned gradient can also result from model mismatch, so a
+local saturation indicator is not a proof of global unreachability.
+
+\section{Compact algorithm and interpretation}
+
+At each outer iteration $k$:
+\begin{enumerate}
+  \item apply $u_k$, measure and align $y_k$, and form $r_k=d-y_k$;
+  \item fit and validate $\Fhat_k$ from the current input-output pair;
+  \item freeze $\Fhat_k$ and construct its real-linear JVP and VJP at $u_k$;
+  \item compute a raw VJP step or solve Eq.~\eqref{eq:lm-normal-equation} by matrix-free CG;
+  \item apply trust-region scaling, input projection, anchored nonlinear prediction, and backtracking;
+  \item accept the first safe predicted-decrease candidate, otherwise hold or use a declared fallback; and
+  \item refit only after the next physical PA measurement.
+\end{enumerate}
+
+The conceptual improvement is not merely the addition of a model. It replaces the identity-sensitivity
+approximation with the differential of an iteration-wise fitted forward model, uses the real adjoint to
+transport the measured residual to the PA input, and regularizes that transport before the next ILC experiment.
+
+This construction combines established PA modeling, backpropagation, and ILC ingredients in a specific
+waveform-level loop. It does not claim the first use of PA forward models, PA Jacobians, memory
+backpropagation, direct learning, memory-polynomial modeling, or model-based ILC. Here ``improved'' means
+that the update contains richer local sensitivity information and explicit numerical safeguards; it does not
+mean uniform superiority over instantaneous-gain, BLA-inverse, or other plant-informed ILC methods.
+
+\section*{Companion documents}
+\addcontentsline{toc}{section}{Companion documents}
+
+The following repository documents provide the implementation and prior-art context:
+\begin{itemize}
+  \item algorithm conventions: \path{docs/algorithm_design.md};
+  \item prior-art boundaries: \path{docs/prior_art_review.md}; and
+  \item Markdown edition: \path{docs/ilc_dpd_forward_model_theory.md}.
+\end{itemize}
+
+\addcontentsline{toc}{section}{References}
+\begin{thebibliography}{9}
+\small
+\raggedright
+
+\bibitem{chani2016ilc}
+J. Chani-Cahuana, P. N. Landin, C. Fager, and T. Eriksson,
+``Iterative learning control for RF power amplifier linearization,''
+\emph{IEEE Transactions on Microwave Theory and Techniques}, vol. 64, no. 9,
+pp. 2778-2789, 2016. \href{https://doi.org/10.1109/TMTT.2016.2588483}{doi: 10.1109/TMTT.2016.2588483}.
+
+\bibitem{schoukens2017preinverse}
+M. Schoukens, J. Hammenecker, and A. Cooman,
+``Obtaining the preinverse of a power amplifier using iterative learning control,''
+\emph{IEEE Transactions on Microwave Theory and Techniques}, vol. 65, no. 11,
+pp. 4266-4273, 2017. \href{https://doi.org/10.1109/TMTT.2017.2694822}{doi: 10.1109/TMTT.2017.2694822}.
+
+\bibitem{morgan2006gmp}
+D. R. Morgan, Z. Ma, J. Kim, M. G. Zierdt, and J. Pastalan,
+``A generalized memory polynomial model for digital predistortion of RF power amplifiers,''
+\emph{IEEE Transactions on Signal Processing}, vol. 54, no. 10,
+pp. 3852-3860, 2006. \href{https://doi.org/10.1109/TSP.2006.879264}{doi: 10.1109/TSP.2006.879264}.
+
+\bibitem{tarver2019backprop}
+C. Tarver, L. Jiang, A. Sefidi, and J. R. Cavallaro,
+``Neural network DPD via backpropagation through a neural network model of the PA,''
+in \emph{Proc. 53rd Asilomar Conference on Signals, Systems, and Computers},
+pp. 358-362, 2019. \href{https://doi.org/10.1109/IEEECONF44664.2019.9048910}{doi: 10.1109/IEEECONF44664.2019.9048910}.
+
+\bibitem{loebl2023memorybackprop}
+E. Loebl, N. Ginzberg, and E. Cohen,
+``Direct learning neural network digital predistortion using backpropagation through a memory power amplifier model,''
+in \emph{Proc. IEEE/MTT-S International Microwave Symposium},
+pp. 791-794, 2023. \href{https://doi.org/10.1109/IMS37964.2023.10187912}{doi: 10.1109/IMS37964.2023.10187912}.
+
+\bibitem{wei2026icg}
+X. Wei, Y. Liu, W. Pan, W. Ma, Q. Xu, S. Shao, and Y. Tang,
+``Iterative learning for RF power amplifier linearization based on instantaneous complex gain,''
+\emph{IEEE Microwave and Wireless Technology Letters}, vol. 36, no. 1,
+pp. 7-10, 2026. \href{https://doi.org/10.1109/LMWT.2025.3620316}{doi: 10.1109/LMWT.2025.3620316}.
+
+\end{thebibliography}
+
+\end{document}

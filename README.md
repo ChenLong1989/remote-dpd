@@ -95,8 +95,11 @@ MAT v5/v6 由 SciPy 读写。安装 `h5py` 后只提供有限的 v7.3/HDF5 顶�
 | `PAModelFallback` | `linear` 或 `hold` |
 
 完整更新公式、复数实线性梯度、校准、配置约束和回退定义见
-[算法设计](docs/algorithm_design.md)；面向经典 ILC 局限与正向模型反传的英文推导见
-[理论说明](docs/ilc_dpd_forward_model_theory.md)；文件协议与状态机见[系统设计](docs/system_design.md)。
+[算法设计](docs/algorithm_design.md)；面向经典 ILC 局限与正向模型反传的英文推导提供
+[Markdown](docs/ilc_dpd_forward_model_theory.md) 和
+[LaTeX](docs/ilc_dpd_forward_model_theory.tex) 两种源文件，并附有
+[PDF](output/pdf/ilc_dpd_forward_model_theory.pdf)；文件协议与状态机见
+[系统设计](docs/system_design.md)。
 
 ## 冻结仿真实验
 
