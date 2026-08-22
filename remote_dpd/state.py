@@ -24,6 +24,11 @@ class SessionState:
     iteration: int = 1
     last_feedback_id: str | None = None
     last_input_id: str | None = None
+    last_output_id: str | None = None
+    last_config_id: str | None = None
+    feedback_calibration: complex | None = None
+    feedback_binding_verified: bool = False
+    external_session_id: str | None = None
     last_metrics: dict[str, object] | None = None
 
     def reset(self) -> None:
@@ -32,6 +37,11 @@ class SessionState:
         self.iteration = 1
         self.last_feedback_id = None
         self.last_input_id = None
+        self.last_output_id = None
+        self.last_config_id = None
+        self.feedback_calibration = None
+        self.feedback_binding_verified = False
+        self.external_session_id = None
         self.last_metrics = None
 
     def set_reference(self, reference: np.ndarray) -> bool:
@@ -44,5 +54,9 @@ class SessionState:
         self.iteration = 1
         self.last_feedback_id = None
         self.last_input_id = identity
+        self.last_output_id = None
+        self.feedback_calibration = None
+        self.feedback_binding_verified = False
+        self.external_session_id = None
         self.last_metrics = None
         return True

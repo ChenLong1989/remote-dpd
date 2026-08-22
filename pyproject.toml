@@ -14,9 +14,19 @@ dependencies = [
     "watchdog>=3.0",
 ]
 
+[project.optional-dependencies]
+research = [
+    "matplotlib>=3.8",
+    "pdfplumber>=0.11",
+    "psutil>=5.9",
+    "pypdf>=5.0",
+    "reportlab>=4.0",
+    "threadpoolctl>=3.5",
+]
+
 [project.scripts]
 remote-dpd = "remote_dpd.run_filewatch:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["remote_dpd*"]
+include = ["remote_dpd*", "experiments*"]

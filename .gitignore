@@ -6,3 +6,9 @@ venv/
 *.egg-info/
 build/
 dist/
+docs/current_plan.md
+artifacts/
+tmp/
+paper/_build/
+output/pdf/*
+!output/pdf/pa_model_backprop_ilc.pdf

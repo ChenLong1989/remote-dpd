@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Iterable
 
 import numpy as np
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentBatch:
+    signal: np.ndarray
+    delays: list[float]
+    coefficients: list[complex]
 
 
 def rms(signal: np.ndarray) -> float:
@@ -76,6 +84,29 @@ def fractional_shift(signal: np.ndarray, shift_samples: float) -> np.ndarray:
     return np.fft.ifft(spectrum * np.exp(-2j * np.pi * bins * shift_samples))
 
 
+def legacy_gain_phase_calibration(reference: np.ndarray, measured: np.ndarray) -> complex:
+    """Return the legacy global phase and RMS calibration coefficient.
+
+    ``measured`` is assumed to have already been time aligned.  The legacy
+    coefficient deliberately uses a unit-magnitude cross-correlation phase
+    and an independent RMS ratio; it is not the complex least-squares gain.
+    """
+    reference, measured = _same_length(reference, measured)
+    if reference.size == 0:
+        return 1.0 + 0.0j
+
+    cross = np.vdot(measured, reference)
+    if abs(cross) > np.finfo(float).eps:
+        phase = cross / abs(cross)
+    else:
+        phase = 1.0 + 0.0j
+
+    measured_rms = rms(measured)
+    if measured_rms <= np.finfo(float).eps:
+        return 1.0 + 0.0j
+    return complex(phase * rms(reference) / measured_rms)
+
+
 def align_signal(reference: np.ndarray, measured: np.ndarray, *, gain_phase: bool = True) -> tuple[np.ndarray, float, complex]:
     """Align measured to reference with 1/32-sample delay resolution.
 
@@ -97,21 +128,19 @@ def align_signal(reference: np.ndarray, measured: np.ndarray, *, gain_phase: boo
     aligned = fractional_shift(measured, delay)
     coefficient = 1.0 + 0j
     if gain_phase:
-        cross = np.vdot(aligned, reference)
-        if abs(cross) > np.finfo(float).eps:
-            phase = cross / abs(cross)
-        else:
-            phase = 1.0 + 0j
-        input_rms = rms(aligned)
-        reference_rms = rms(reference)
-        if input_rms > np.finfo(float).eps:
-            coefficient = phase * reference_rms / input_rms
-            aligned = aligned * coefficient
+        coefficient = legacy_gain_phase_calibration(reference, aligned)
+        aligned = aligned * coefficient
     return np.asarray(aligned, dtype=np.complex128), delay, complex(coefficient)
 
 
-def align_and_average(reference: np.ndarray, feedback: np.ndarray) -> tuple[np.ndarray, list[float], list[float]]:
-    """Align one capture or the legacy ten-capture packed feedback."""
+def align_and_average_detailed(
+    reference: np.ndarray,
+    feedback: np.ndarray,
+    *,
+    calibration: complex | None = None,
+    estimate_gain_phase: bool = True,
+) -> AlignmentBatch:
+    """Align captures and expose the complex measurement calibration."""
     reference = np.asarray(reference, dtype=np.complex128).reshape(-1)
     feedback = np.asarray(feedback, dtype=np.complex128).reshape(-1)
     if feedback.size == 10 * reference.size and reference.size > 0:
@@ -120,14 +149,36 @@ def align_and_average(reference: np.ndarray, feedback: np.ndarray) -> tuple[np.n
         captures = feedback.reshape(1, -1)
     aligned = []
     delays = []
-    gains = []
+    coefficients: list[complex] = []
     for capture in captures:
         current_ref, current_capture = _same_length(reference, capture)
-        result, delay, gain = align_signal(current_ref, current_capture, gain_phase=True)
+        if calibration is None:
+            result, delay, coefficient = align_signal(
+                current_ref,
+                current_capture,
+                gain_phase=estimate_gain_phase,
+            )
+        else:
+            result, delay, _ = align_signal(current_ref, current_capture, gain_phase=False)
+            coefficient = complex(calibration)
+            result = result * coefficient
         aligned.append(result)
         delays.append(delay)
-        gains.append(abs(gain))
-    return np.mean(np.stack(aligned, axis=0), axis=0), delays, gains
+        coefficients.append(complex(coefficient))
+    return AlignmentBatch(
+        signal=np.mean(np.stack(aligned, axis=0), axis=0),
+        delays=delays,
+        coefficients=coefficients,
+    )
+
+
+def align_and_average(
+    reference: np.ndarray,
+    feedback: np.ndarray,
+) -> tuple[np.ndarray, list[float], list[float]]:
+    """Align one capture or the legacy ten-capture packed feedback."""
+    result = align_and_average_detailed(reference, feedback)
+    return result.signal, result.delays, [abs(value) for value in result.coefficients]
 
 
 def _same_length(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -14,7 +14,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("supplier_name", help="supplier directory name, e.g. Zilink")
     parser.add_argument("--watch-root", default="/opt/SharePoint", help="root containing supplier directories")
     parser.add_argument("--path", help="watch this exact directory instead of <watch-root>/<supplier>")
-    parser.add_argument("--engine", default="ilc", choices=("ilc",), help="DPD engine (currently ILC only)")
+    parser.add_argument(
+        "--engine",
+        default="ilc",
+        choices=(
+            "ilc",
+            "legacy_ilc",
+            "linear_ilc",
+            "instantaneous_gain_ilc",
+            "model_vjp_ilc",
+            "model_lm_ilc",
+        ),
+        help="DPD/ILC engine",
+    )
     parser.add_argument("--heartbeat-seconds", type=float, default=1800.0)
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     return parser

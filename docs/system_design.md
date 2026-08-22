@@ -1,471 +1,304 @@
 # Remote DPD 系统设计
 
-本文档描述当前仓库中 `remote-dpd` 的实际实现。代码是行为的最终依据；本文不会把预留接口、兼容字段或 README 中的概括表述当成已实现能力。
+## 1. 系统定位与边界
 
-## 1. 系统定位
+`remote-dpd` 包含两个共享数值核心、但运行边界不同的子系统：
 
-`remote-dpd` 是一个常驻的 Python 文件监听服务，用于替代旧的 MATLAB Remote DPD 服务。外部设备或上游程序通过共享目录交换 MAT 文件，服务在内存中维护一次 DPD 会话的迭代状态，并使用 ILC（Iterative Learning Control，迭代学习控制）生成下一轮发射波形。
+1. 常驻文件服务：通过共享目录接收 MAT 配置、参考波形和反馈，维护内存会话并输出下一轮 DPD；
+2. 可复现实验框架：直接调用数值算法和合成 PA，执行冻结矩阵、恢复、统计和论文图表导出。
 
-当前实现的边界如下：
+两者均不依赖 MATLAB Engine、MATLAB Runtime 或 MATLAB License。文件服务面向既有传输兼容，默认
+保持 legacy ILC；研究 runner 面向仿真机制验证，不经过 watchdog、ACK、文件去重或动态测量校准。
 
-- 保留既有的 MAT 文件名和主要变量名，不依赖 MATLAB Engine、MATLAB Runtime 或 MATLAB License。
-- 只实现并注册 `ilc` 算法。旧配置中的 MARS、MADE 和 ideal DPD 选择标志不会切换算法。
-- 服务本身不提供 HTTP、RPC 或消息队列接口；所谓“远程”通信完全由共享文件系统承担。
-- 会话状态只保存在进程内存中，不持久化，也不会在进程重启后恢复。
-- 输出采样率转换、PAPR 处理和均衡器开关目前没有进入计算链路，虽然对应配置可被解析。
+当前仓库没有真实 PA 闭环平台。研究结果只能说明预定义合成 PA 中的数值行为，不支持硬件、PAE、
+热稳定性、3GPP 合规或产业部署宣称。
 
-## 2. 运行环境与部署单元
+## 2. 模块划分
 
-项目要求 Python 3.10 或更高版本，核心依赖为：
-
-| 依赖 | 当前用途 |
+| 模块 | 职责 |
 | --- | --- |
-| NumPy `>=1.24` | IQ 向量、FFT、指标和 MAT 边界数据处理 |
-| SciPy `>=1.10` | MAT v5/v6/v7 读写和多相重采样 |
-| PyTorch `>=2.0` | ILC 更新步骤、可选 CUDA 执行和循环 FIR |
-| watchdog `>=3.0` | 共享目录的创建、修改和移动事件监听 |
-| h5py（可选，未写入项目依赖） | SciPy 对 v7.3 文件抛出 `NotImplementedError` 时的有限 HDF5 读取回退 |
+| `remote_dpd/protocol.py` | 文件名、MAT 加载/保存、MATLAB struct 解包与 IQ 校验 |
+| `remote_dpd/config.py` | legacy `configDPD` 兼容、模型/校准/安全字段的强类型归一化与配置指纹 |
+| `remote_dpd/state.py` | 会话状态、输入/反馈/输出内容指纹、冻结校准和外部 session |
+| `remote_dpd/dsp.py` | RMS/NMSE、重采样、周期时延对齐、固定或动态校准、循环 FIR |
+| `remote_dpd/pa_model.py` | 确定性 ridge-LS memory-polynomial 模型及解析 JVP/VJP |
+| `remote_dpd/learning.py` | linear、instantaneous-gain、raw VJP、LM、CG、trust region 和输入投影 |
+| `remote_dpd/algorithms.py` | engine 注册、legacy 兼容更新与文件服务算法编排 |
+| `remote_dpd/service.py` | watchdog 生命周期、文件路由、绑定校验、状态提交、ACK/输出/心跳 |
+| `remote_dpd/run_filewatch.py` | 文件服务 CLI |
+| `experiments/waveforms.py` | 确定性 NR-like OFDM 和命名 SeedSequence |
+| `experiments/scenarios.py` | 可微合成 PA、可达性和压力场景 |
+| `experiments/config.py` | 冻结科学协议、pilot 候选与 trajectory 矩阵 |
+| `experiments/runner.py` | 容量门、manifest、checkpoint、并行调度、恢复和自校验 shards |
+| `experiments/statistics.py` | paired bootstrap、Holm 校正、pilot 选择和预注册判据 |
+| `experiments/analysis.py` | 完整性验证、失败保留、端点与 CSV/JSON 导出 |
+| `experiments/plot_results.py` | 从已验证结果生成固定样式 PNG/PDF 图 |
 
-`pyproject.toml` 注册了命令行入口：
+```mermaid
+flowchart LR
+    Producer["上游 MAT 生产者"] --> Watch["watchdog / RemoteDPDService"]
+    Watch --> Boundary["protocol + config + SessionState"]
+    Boundary --> Engine["ILC engine"]
+    Engine --> DSP["alignment / calibration"]
+    Engine --> Learn["learning + PA model"]
+    Engine --> Boundary
+    Boundary --> Consumer["ACK / DPD output / EVM"]
+
+    Frozen["ExperimentProtocol"] --> Runner["ExperimentRunner"]
+    Runner --> PA["synthetic PA scenarios"]
+    Runner --> Learn
+    Runner --> Shards["verified shards + checkpoints"]
+    Shards --> Analysis["verified analysis + figures"]
+```
+
+## 3. 部署与命令行
+
+项目要求 Python 3.10 或更高。核心依赖为 NumPy、SciPy、PyTorch 和 watchdog；研究 extra 还包含
+Matplotlib、psutil 与 PDF 工具。安装入口：
 
 ```text
 remote-dpd = remote_dpd.run_filewatch:main
 ```
 
-典型启动命令为：
+示例：
 
 ```bash
 remote-dpd Zilink --watch-root /opt/SharePoint
+remote-dpd lab --path D:\DPD\lab --engine model_lm_ilc
 ```
 
-未指定 `--path` 时，监听目录为 `<watch-root>/<supplier_name>`，默认即 `/opt/SharePoint/Zilink`。指定 `--path` 后直接监听该目录，但 `supplier_name` 位置参数仍用于日志名称和供应商默认配置。
+CLI 支持 `ilc`、`legacy_ilc`、`linear_ilc`、`instantaneous_gain_ilc`、`model_vjp_ilc`、
+`model_lm_ilc`。`ilc` 按配置模式分派；其余显式 engine 覆盖配置中的 mode。默认心跳周期为 1800 秒，
+日志级别可选 `DEBUG/INFO/WARNING/ERROR`。
 
-命令行参数的实现值如下：
+一个服务实例只应监听一个专用供应商目录，并由一个上游控制器按顺序驱动。实现没有多生产者事务、
+跨文件原子提交、服务状态持久化、容器编排或日志轮转。
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `supplier_name` | 无，必填 | 供应商目录名和服务标识 |
-| `--watch-root` | `/opt/SharePoint` | 供应商目录的父目录 |
-| `--path` | 未设置 | 覆盖最终监听目录 |
-| `--engine` | `ilc` | `argparse` 当前只允许 `ilc` |
-| `--heartbeat-seconds` | `1800.0` | 心跳写入周期，服务内部最小按 `0.1` 秒执行 |
-| `--log-level` | `INFO` | 可选 `DEBUG/INFO/WARNING/ERROR` |
+## 4. 文件服务生命周期
 
-CPU 部署可先安装 `requirements-cpu.txt`，该文件将 PyTorch 索引指向 CPU wheel。项目本身没有容器、systemd、进程守护或日志轮转配置，这些需要由部署环境提供。
+### 4.1 启动与事件
 
-## 3. 总体架构
+`RemoteDPDService.start()` 创建监听目录、启动递归 watchdog Observer 和 daemon 心跳线程。服务只处理
+启动后产生的创建、修改或移动事件，不主动扫描启动前已经存在且不再变化的输入。事件路径经过短时
+去抖和 `(size, mtime_ns)` 稳定检查；超时只记录 warning，随后仍尝试读取。
 
-```mermaid
-flowchart LR
-    Producer[上游文件生产者] -->|Config_file / DPD_in / FB_Signal| Share[供应商共享目录]
-    Share --> Watch[watchdog Observer]
-    Watch --> Service[RemoteDPDService]
-    Service --> Protocol[protocol: MAT 兼容边界]
-    Service --> Config[config: 旧配置归一化]
-    Service --> State[SessionState: 内存会话]
-    Service --> Engine[DPDEngine / ILCAlgorithm]
-    Engine --> DSP[dsp: 重采样、对齐、FIR、NMSE]
-    Service --> Metrics[metrics: symbol EVM]
-    Service -->|ACK / DPD 输出 / EVM / 心跳| Share
-    Share --> Consumer[上游文件消费者]
-```
+事件处理线程把异常记录后继续常驻；测试或嵌入调用可直接调用同步 `process_file()`，该入口把异常
+交给调用方。心跳写入 `sync_dat.txt`，计数器只存在于进程内存。
 
-### 3.1 模块职责
+### 4.2 文件路由
 
-| 模块 | 职责 | 重要边界 |
-| --- | --- | --- |
-| `remote_dpd/run_filewatch.py` | 解析 CLI、配置日志、创建服务并常驻运行 | CLI 的 engine choices 目前固定为 `ilc` |
-| `remote_dpd/service.py` | 监听生命周期、文件路由、会话编排、ACK/输出写入、心跳和 `safeBack` | 持有唯一的 `SessionState`、当前配置和当前引擎实例 |
-| `remote_dpd/protocol.py` | 文件名常量、MAT 加载/保存、MATLAB struct 解包、IQ 向量校验 | 隔离 SciPy/h5py 和 MATLAB 数据形态 |
-| `remote_dpd/config.py` | 将旧 `configDPD` 或顶层字段归一化为 `LegacyConfig` | 兼容别名和供应商特定默认值 |
-| `remote_dpd/algorithms.py` | `DPDEngine` 扩展接口、引擎注册表和 ILC 实现 | 数值输入与文件协议解耦 |
-| `remote_dpd/dsp.py` | RMS、NMSE、循环 FIR、重采样、亚采样对齐和多捕获平均 | 全部以一维复数 NumPy 向量为边界 |
-| `remote_dpd/metrics.py` | 基于波形的 OFDM symbol EVM 估算 | 不是完整的 5G NR 解调器 |
-| `remote_dpd/state.py` | 显式会话状态和波形 SHA-256 指纹 | 取代旧 MATLAB base workspace 状态 |
-| `remote_dpd/exceptions.py` | 协议和算法异常类型 | `UnsupportedAlgorithm` 当前未被引擎工厂使用 |
-
-### 3.2 核心对象关系
-
-一个 `RemoteDPDService` 实例对应一个监听目录和一份内存会话：
-
-- `config` 保存最近一次成功加载的 `LegacyConfig`。
-- `engine` 由该配置转换成 `ILCConfig` 后创建。每次配置文件到达都会重建引擎。
-- `state` 在服务实例生命周期内复用，配置重建引擎时不会自动重置。
-- `RLock` 保护配置替换、输入状态变更和单次 ILC 状态提交，但 MAT 读取、部分前置读取及输出文件写入不在同一个锁事务内。
-
-## 4. 服务生命周期与并发模型
-
-### 4.1 启动
-
-`RemoteDPDService.start()` 按以下顺序执行：
-
-1. 创建监听目录及其父目录。
-2. 动态导入 watchdog；未安装时抛出 `RuntimeError`。
-3. 创建递归 `Observer`，注册创建、修改和移动事件。移动事件使用目标路径。
-4. 启动 Observer。
-5. 清除停止事件，启动 daemon 心跳线程。
-
-服务启动时不会扫描或处理目录中已经存在的 `Config_file.mat`、`DPD_in.mat` 或 `FB_Signal.mat`。这些文件只有在启动后再次产生受监听事件时才会进入处理流程。服务也不会立即写心跳，第一次心跳发生在一个完整心跳周期之后。
-
-`run_forever()` 在主线程中按 `poll_seconds` 等待停止事件，默认 `0.5` 秒。捕获 `KeyboardInterrupt` 后调用 `stop()`；`stop()` 会停止 Observer、最多等待 5 秒，再最多等待心跳线程 2 秒。
-
-### 4.2 事件筛选和文件稳定性
-
-Observer 以 `recursive=True` 监听。因此，根目录的后代路径也会被接收；输入文件从事件文件所在目录读取，但所有 ACK 和算法输出始终写到服务根目录。协议预期仍是直接在根目录交换文件。
-
-事件处理规则如下：
-
-1. 忽略目录事件。
-2. 按文件 `stem` 忽略服务自身输出：`sync_dat`、`Config_file_ack`、`ACK_DPDin`、`DPDout_Nokia`、`symbolEVM`。
-3. 使用路径字符串记录最近事件的单调时钟时间；与上次事件间隔小于 `stable_seconds`（默认 `0.15` 秒）时直接忽略。
-4. 对未忽略事件轮询 `(st_size, st_mtime_ns)`。连续两次相同即认为稳定，两次检查之间休眠 `stable_seconds`。
-5. 超过 `settle_timeout_seconds`（默认 `20` 秒）只记录 warning，之后仍继续尝试处理。
-6. 事件路径在等待期间消失时结束稳定等待，后续读取若失败则由统一异常处理记录日志。
-
-watchdog 路径中的任意异常都会被 `_on_file_event()` 捕获并记录堆栈，常驻进程继续运行。测试和嵌入式调用可直接调用同步的 `process_file()`；该入口绕过事件去抖和稳定等待，并把异常抛给调用方。
-
-### 4.3 线程和一致性
-
-运行时至少涉及主等待线程、watchdog Observer 的事件线程和心跳线程。当前锁粒度不是完整文件事务：
-
-- 配置 MAT 在锁外读取，配置和引擎在锁内一起替换。
-- DPD 输入 MAT 在锁外读取和裁剪，`SessionState.set_reference()` 在锁内执行，ACK 在锁外写入。
-- 反馈 MAT、参考状态读取和反馈指纹计算发生在锁外；引擎计算及状态提交发生在锁内；`DPDout_Nokia.mat` 和 `symbolEVM.mat` 在释放锁后写入。
-- 心跳写入和 `safeBack` 清理不获取该锁。
-
-因此该实现适合一个生产者按协议顺序驱动一个服务实例，不提供多生产者并发事务、跨文件原子提交或多进程协调。多个服务实例监听同一目录会竞争状态和输出文件，不属于支持的部署方式。
-
-## 5. 文件交换协议
-
-### 5.1 文件路由
-
-`process_file()` 仅按 `Path.stem` 路由以下输入：
-
-| 输入文件 stem | 处理动作 |
+| 输入 stem | 行为 |
 | --- | --- |
-| `Config_file` | 加载配置、重建引擎、可选重置、写配置 ACK |
-| `DPD_in` | 加载参考波形、按起始样点裁剪、更新会话、写输入 ACK |
-| `FB_Signal` | 去重并执行一次 ILC、写 DPD 输出和 symbol EVM |
-| `safeBack` | 仅当文件直接位于服务根目录时清理根目录普通文件并重置状态 |
+| `Config_file` | 解析配置、构造 engine、按规则重置状态、写配置 ACK |
+| `DPD_in` | 读取并裁剪参考，建立或保持会话、写输入 ACK |
+| `FB_Signal` | 校验可选绑定、去重、执行一轮 ILC、写 DPD 输出和兼容 EVM |
+| `safeBack` | 仅根目录触发；删除根目录普通文件并重置状态 |
 
-其他文件静默忽略。`resolve_file()` 同时接受正常 `.mat` 路径和无扩展名路径：若传入路径没有 `.mat` 后缀，会先检查原路径，再检查同名 `.mat` 文件。
+其他 stem 被忽略。Observer 虽为递归监听，但协议输入和所有输出都应放在服务根目录。
 
-### 5.2 输入契约
+### 4.3 MAT 边界
 
-| 文件 | 接受的变量 | 校验与归一化 |
+SciPy 负责 MAT v5/v6 读取与写入。加载器递归解包常见 scipy MATLAB struct、structured array、
+object array 和 mapping；IQ 变量统一为一维 `complex128`。只有 SciPy 明确报告 v7.3 不支持时才尝试
+可选 `h5py`，且只完整支持简单顶层 numeric dataset，不实现通用 v7.3 struct/object reference。
+
+MAT 输出先写同目录临时文件，再以 `Path.replace()` 原子替换单个目标。一次反馈同时涉及内存状态、
+DPD 输出和 EVM 三个提交点，整体不是事务。
+
+## 5. 文件契约与绑定
+
+### 5.1 输入
+
+| 文件 | 接受变量 | 关键校验 |
 | --- | --- | --- |
-| `Config_file.mat` | 优先使用 `configDPD` struct；不存在时把顶层 mapping 当成配置 | 各字段按标量首元素读取，详见第 6 节 |
-| `DPD_in.mat` | 依次查找 `DPD_In_cut`、`DPD_in`、`DPDin` | 必须非空且为数值类型，转换成扁平 `complex128`；再从 `StartingSample - 1` 开始裁剪 |
-| `FB_Signal.mat` | 依次查找 `FB_Signal_cut`、`FB_Signal`、`feedback` | 必须非空且为数值类型，转换成扁平 `complex128` |
+| `Config_file.mat` | 优先 `configDPD` struct，否则顶层 mapping | 标量、枚举、范围、有限性和模式冲突 |
+| `DPD_in.mat` | `DPD_In_cut`、`DPD_in` 或 `DPDin` | 非空 numeric IQ；应用 `StartingSample-1` 裁剪后仍须非空 |
+| `FB_Signal.mat` | `FB_Signal_cut`、`FB_Signal` 或 `feedback` | 非空 numeric IQ；必须已有参考 |
 
-缺失、空值或非数值 IQ 变量会抛出 `MatProtocolError`。`DPD_in` 在裁剪前校验非空，但实现没有再次校验裁剪后的向量是否为空。
+### 5.2 输出
 
-反馈必须在 DPD 输入之后到达，否则抛出 `MatProtocolError("FB_Signal received before DPD_in")`。配置文件不是处理 DPD 输入和反馈的硬性前置条件；没有配置事件时使用 `LegacyConfig` 默认值。
-
-### 5.3 输出契约
-
-| 文件 | 写入时机 | MAT 变量或文本内容 |
-| --- | --- | --- |
-| `Config_file_ack.mat` | 每次成功加载配置 | `ACK`: `int8` 标量；`timestamp`: UTC ISO 8601 字符串 |
-| `ACK_DPDin.mat` | 每次成功接收 DPD 输入 | `ACK_DPDin`: 值为 1 的 `int8` 标量 |
-| `ACK_DPDin.mat` | `Reset=true` 的配置路径 | `ACK`: 值为 0 的 `int8` 标量。该变量名与正常输入 ACK 不同，是当前实现的兼容行为 |
-| `DPDout_Nokia.mat` | 每个未重复的反馈成功计算后 | `DPDout_Nokia`: 复数向量；`iter`: 本轮迭代号 `int64`；若反馈含 `ITNum`/`IT_ID`，原样透传这两个字段 |
-| `symbolEVM.mat` | DPD 输出写入成功之后 | `symbolEVM`: 每个完整 OFDM symbol 的 EVM 百分比向量，或短捕获的单个全局值 |
-| `sync_dat.txt` | 每个心跳周期 | 从 1 开始的进程内计数器和换行，ASCII 编码 |
-
-配置 ACK 的值由状态决定：
-
-- `Reset=true` 时重置会话并写 `ACK=1`，等待 50 ms 后写上述 reset 形式的 `ACK_DPDin.mat`。
-- `Reset=false` 且尚无参考波形时写 `ACK=1`。
-- `Reset=false` 且已有参考波形时写 `ACK=0`。
-
-协议层通过同目录临时文件 `.<stem>.tmp.mat` 写 MAT v5 文件，再用 `Path.replace()` 替换目标。因此单个 MAT 输出在同一文件系统内采用原子替换。多个输出之间没有原子性，例如 DPD 输出成功而 EVM 输出失败是可能的。心跳使用普通 `write_text()`，不采用临时文件替换。
-
-### 5.4 MAT 格式兼容
-
-加载时优先调用 `scipy.io.loadmat(..., squeeze_me=True, struct_as_record=False)`，删除以 `__` 开头的元数据，并递归把 scipy MATLAB struct、structured array、object array 和 mapping 解包为 Python 容器。普通数值数组保持 NumPy 数组。
-
-仅当 SciPy 抛出 `NotImplementedError` 时才尝试 `h5py`。该回退只遍历 HDF5 顶层对象，并能直接返回实数、整数、无符号整数或复数 dataset；它没有实现 MATLAB v7.3 struct、object reference 和 group 的完整解码。因此 v7.3 支持是有限的，并且 `h5py` 需要额外安装。SciPy 抛出的 `OSError` 或 `ValueError` 会直接包装为 `MatProtocolError`，不会进入 h5py 回退。
-
-保存始终使用 `scipy.io.savemat()` 生成未压缩的 MAT v5 文件，并启用长字段名。
-
-### 5.5 `safeBack` 行为
-
-文件 stem 为 `safeBack` 时触发清理，但只有触发文件所在目录解析后恰好等于服务根目录才执行；子目录中的同名文件只记录 warning。
-
-执行时遍历根目录的直接子项，删除所有文件，但保留文件名严格等于 `safeBack` 的文件。子目录及其内容不删除。若触发文件名是 `safeBack.mat`，它也会因文件名不等于 `safeBack` 而被删除。清理完成后调用 `SessionState.reset()`，没有 ACK 文件。
-
-删除循环没有逐文件异常隔离；任一 `unlink()` 失败都会中止后续删除，且本次不会执行末尾的状态重置。watchdog 调用路径会记录该异常后继续运行服务。
-
-该能力会删除协议目录中的普通文件，部署时必须把监听目录视为受信任、专用目录，并限制谁可以创建 `safeBack` 文件。
-
-## 6. 配置模型
-
-### 6.1 归一化规则
-
-`config_from_mat()` 从 `configDPD` 或顶层 mapping 生成 `LegacyConfig`。MATLAB 数组字段一般只取扁平后的第一个元素。
-
-| 输入字段及别名 | 默认值/转换 | 当前消费位置 |
-| --- | --- | --- |
-| `supplierName` | 服务传入的供应商名；转换为字符串 | 决定 Zilink 特定的学习率和相位补偿默认值；不会改写服务自身的 `supplier_name` |
-| `InternalSamplingRate` | `983.04` MHz，之后无条件乘 `1e6` | ILC 输入采样率、反馈重采样目标和 EVM |
-| `FeedbackSamplingRate` / `FBSamplingRate` | 默认等于内部采样率，单位 MHz，之后乘 `1e6` | ILC 反馈重采样比 |
-| `OutputSamplingRate` | 默认等于内部采样率，单位 MHz，之后乘 `1e6` | 传入 `ILCConfig`，但当前算法未使用，不执行输出重采样 |
-| `BW` / `FB_BW` | `700.0`；小于 `1e6` 时按 MHz 乘 `1e6`，否则按 Hz 保留 | symbol EVM 参数选择 |
-| `LearningRate` | `0.5`；非有限值或小于等于 0 时回退到 `0.5` | ILC 的 `mu` 基础值 |
-| `ILCMu` / `mu` | 若存在则覆盖学习率；覆盖值不再做有限性和正值校验 | ILC 的 `mu` |
-| `StartingSample` | `1`，取整数且最小为 1 | 输入裁剪和输出零前缀，使用 MATLAB 风格的一基索引语义 |
-| `alpha` | `0.0` | ILC 更新公式 |
-| `dpdGainDb` | `0.0` dB | ILC 增益因子 |
-| `phaseCompensate` / `phase_compensate` | Zilink/Zillnk 默认 true，其他供应商默认 false；字符串仅把 `1/true/yes/on` 视为 true | ILC 误差相位补偿 |
-| `phaseCompThr` / `phaseCompensationThreshold` | `0.15`；非有限值或小于等于 0 时回退 | 相位补偿门限比例 |
-| `txFirHd` / `tx_fir` | 转成一维 `float64`；只有多于 1 个 tap 才启用 | ILC 更新结果的循环 FIR |
-| `errFirHd` / `err_fir` | 同上 | ILC 误差的循环 FIR |
-| `PAPR` | `7.5` dB | 保存到配置，但当前未使用，无削峰或 PAPR 约束 |
-| `enableEq` | false | 保存到配置，但服务调用 EVM 时未传 equalizer，当前未生效 |
-| `Reset` | false | 配置处理器重置会话 |
-| `debug` | false | 保存到配置，但不改变当前日志或算法路径 |
-| 其他字段 | 保存在 `LegacyConfig.extra`，并传入 `ILCConfig.extra` | 当前 ILC 不读取 `extra` |
-
-当供应商名忽略大小写后是 `zilink` 或兼容拼写 `zillnk`，且 `LearningRate`、`ILCMu`、`mu` 三者均未出现时，学习率默认覆盖为 `0.3`。只要三者任一出现，就走通用覆盖逻辑。
-
-当前 `known` 字段集合没有列出 `alpha`、`dpdGainDb`、`tx_fir` 和 `err_fir`。因此这些字段或别名在被相应强类型属性消费的同时，也会重复保留在 `extra` 中；ILC 不读取这份重复值。
-
-旧字段 `run_idealDPD`、`enILC` 和 `idealDPD` 被当作已知兼容元数据：它们不进入 `extra`，也不参与算法选择。当前服务无论这些字段取何值都使用构造时指定的引擎，而 CLI 只允许 `ilc`。
-
-### 6.2 数值配置对象
-
-`ILCConfig.from_legacy()` 只把算法所需字段从 `LegacyConfig` 复制到数值层。`device` 和 `dtype` 没有 MAT 或 CLI 配置入口，始终使用类默认值：
-
-- `device="auto"`：CUDA 可用时选 `cuda`，否则选 `cpu`。
-- `dtype="complex64"`：计算张量默认使用 PyTorch `complex64`。
-- 算法返回时统一转回 NumPy 扁平 `complex128`。
-
-## 7. 会话状态机
-
-`SessionState` 字段如下：
-
-| 字段 | 初始值 | 含义 |
-| --- | --- | --- |
-| `reference` | `None` | 从 `DPD_in` 裁剪后的参考波形 |
-| `current_dpd` | `None` | 最近一次 ILC 结果，下一轮作为当前输出 |
-| `iteration` | `1` | 下一次反馈计算使用的迭代号 |
-| `last_feedback_id` | `None` | 最近已提交反馈的 SHA-256 指纹 |
-| `last_input_id` | `None` | 当前参考波形的 SHA-256 指纹 |
-| `last_metrics` | `None` | 最近一次引擎返回的 metrics，不包含服务随后计算的 symbol EVM 均值 |
-
-波形指纹由数组 shape、dtype 字符串和连续内存字节共同计算 SHA-256。输入和反馈在计算指纹前已经被协议层转为扁平 `complex128`，输入还已经应用 `StartingSample` 裁剪。
-
-```mermaid
-stateDiagram-v2
-    [*] --> WaitingInput: 服务创建或 reset
-    WaitingInput --> Ready: 新 DPD_in
-    Ready --> Ready: 相同 DPD_in / 仅写 ACK
-    Ready --> Ready: 不同 DPD_in / 替换参考
-    Ready --> Iterating: 未重复 FB_Signal / 计算第 1 轮
-    Iterating --> Iterating: 新 FB_Signal / 计算下一轮
-    Iterating --> Iterating: 重复 FB_Signal / 忽略
-    Iterating --> Iterating: 相同 DPD_in / 仅写 ACK
-    Iterating --> Ready: 不同 DPD_in / 新会话
-    Ready --> WaitingInput: Config Reset 或 safeBack
-    Iterating --> WaitingInput: Config Reset 或 safeBack
-```
-
-状态转换的精确规则是：
-
-- `reset()` 清空两个波形、两个指纹和 metrics，并把迭代号设回 1。
-- `set_reference()` 遇到与当前 `last_input_id` 相同的波形且 `reference is not None` 时返回 false，不重置当前 DPD 或迭代号；处理器仍写成功 ACK。
-- 新参考波形会转换为扁平 `complex128` 数组，清空当前 DPD、反馈指纹和 metrics，并把迭代号设为 1。
-- 新反馈在锁内完成计算后，先保存输出、反馈指纹和引擎 metrics，读取本轮迭代号，再把 `iteration` 加 1。
-- 与 `last_feedback_id` 相同的反馈完全忽略，不重写输出，也不推进迭代号。
-- `Reset=false` 的新配置会替换配置和引擎，但保留参考波形、当前 DPD、反馈指纹和迭代号。
-
-状态提交先于输出文件写入。因此，如果引擎成功且状态已推进，但随后 `DPDout_Nokia.mat` 或 `symbolEVM.mat` 写入失败，再次投递完全相同的反馈会被视为重复并忽略。当前实现没有回滚、提交日志或自动重试，这是一项明确的非事务性边界。
-
-## 8. ILC 处理流程
-
-### 8.1 输入选择与特殊打包格式
-
-`ILCAlgorithm.process(reference, current_output, feedback, state)` 首先把参考和反馈转换为一维 `complex128`。第一轮没有 `current_output` 时，以原始参考波形作为当前 DPD；后续使用上一轮结果。
-
-存在一条硬编码的旧传输兼容路径：当原始反馈长度恰好为 `327680` 且参考长度至少为 `32768` 时：
-
-- 工作长度固定为 `32768`，参考和当前 DPD只取前 `32768` 点。
-- 只训练一个 `32768` 点结果。
-- 最终把结果重复 10 次，输出 `327680` 点。
-
-除此之外，工作长度等于参考长度。如果当前 DPD 较长则截断，较短则在尾部补复数零。
-
-反馈先按以下比率重采样：
-
-```text
-ratio = input_sample_rate_hz / feedback_sample_rate_hz
-```
-
-比率与 1 的误差小于 `1e-12` 时精确复制；否则用 `Fraction(...).limit_denominator(4096)` 得到有理数，再调用 `scipy.signal.resample_poly()`。比率非有限或小于等于 0 时抛出 `ValueError`。
-
-十捕获识别发生在重采样之后：若反馈长度恰好是工作参考长度的 10 倍，按 MATLAB/Fortran 顺序重排为 10 段并分别对齐后求平均；否则把全部反馈视为单次捕获。对于硬编码的 `327680` 格式，非 1:1 重采样可能使长度不再满足十倍条件，此时仍会走 32768 点训练和十次输出复制，但对齐层会把重采样结果当成单次捕获并按工作长度截断。
-
-### 8.2 波形对齐
-
-每个捕获通过 `align_signal()` 对齐到工作参考：
-
-1. 两个向量先截为共同最短长度。
-2. 使用频谱中心补零的周期 FFT 插值，把两者上采样 32 倍。
-3. 计算周期互相关，选择幅度最大点，并映射为有符号延迟。
-4. 延迟精度为 `1/32` 样点；通过频域线性相位完成原采样率上的循环分数延迟。
-5. 计算复数相位和 RMS 比例系数，使反馈的相位和 RMS 对齐参考。
-
-十个捕获分别对齐后在样点维度求均值。算法记录每个捕获的延迟和复增益系数幅度。
-
-### 8.3 更新公式
-
-记：
-
-- `r` 为工作参考；
-- `u_k` 为当前 DPD，第一轮等于未加增益的 `r`；
-- `y_k` 为重采样、对齐并平均后的反馈；
-- `G = 10^(gain_db / 20)`；
-- `r_g = G * r`；
-- `mu` 为学习率，`alpha` 为参考混合系数。
-
-基础误差为：
-
-```text
-e_k = y_k - r_g
-```
-
-启用相位补偿时，代码按当前 DPD 和反馈幅度构造软权重。门限为 `phase_threshold * RMS(r_g)`，且不小于张量实数 dtype 的 epsilon。当 `|u_k| > max(0.1 * threshold, epsilon)` 时，补偿相位为 `conj(sign(y_k / u_k))`；其他样点的相位因子为 1。误差乘以下式：
-
-```text
-w = |u_k|^2 / (|u_k|^2 + threshold^2)
-    * |y_k|^2 / (|y_k|^2 + threshold^2)
-
-e_k <- e_k * (w * phase + (1 - w))
-```
-
-随后可对误差应用 `error_fir`。记处理后的误差为 `e'_k`，代码中的更新公式精确为：
-
-```text
-u_(k+1) = G * alpha * r_g
-          + (1 - alpha) * u_k
-          - G * mu * e'_k
-```
-
-注意 `r_g` 已经包含一次 `G`，所以第一项在 `alpha != 0` 时实际包含 `G^2`。本文保留这一实现语义，不把它简化成不同公式。
-
-最后可对 `u_(k+1)` 应用 `tx_fir`。两个 FIR 都采用中心对齐的循环卷积：PyTorch 实现逐 tap 使用 `torch.roll()`，不会引入零填充边缘。`dsp.circular_fir()` 提供相同设计意图的 NumPy 原语并由单元测试覆盖，但 ILC 热路径实际调用的是 `_apply_fir_torch()`。
-
-### 8.4 输出长度与起始样点
-
-引擎返回工作结果或十次复制结果后，服务在最前面拼接 `StartingSample - 1` 个复数零，再写 `DPDout_Nokia`。因此输出长度等于引擎结果长度加该前缀；服务不会按 `OutputSamplingRate` 进行二次重采样。
-
-`current_dpd` 保存的是不含 `StartingSample` 零前缀的引擎结果。该值传给下一轮迭代，算法再根据本轮工作长度决定保持、截断或补零。
-
-## 9. 指标与可观测性
-
-### 9.1 引擎 metrics
-
-每次 ILC 返回以下内存指标，并保存到 `state.last_metrics`：
-
-| 字段 | 计算方式 |
+| 文件 | 内容 |
 | --- | --- |
-| `iteration` | 计算开始时的 `state.iteration` |
-| `aligned_nmse_db` | `10*log10(||feedback-r_g||^2 / ||r_g||^2)`；参考能量过小时为 NaN |
-| `feedback_gain_correction_db` | 所有对齐增益幅度均值的 `20*log10`，以 float tiny 防止 log(0) |
-| `alignment_delays` | 各捕获施加的有符号延迟，单位为样点 |
-| `capture_count` | 对齐捕获数量，通常为 1 或 10 |
-| `feedback_rms` | 对齐平均反馈的 RMS |
-| `output_rms` | 引擎返回结果的 RMS；打包路径下对重复后的完整结果计算 |
+| `Config_file_ack.mat` | `ACK` 与 UTC timestamp |
+| `ACK_DPDin.mat` | `ACK_DPDin=1`、`DPDInputID`、`expectedFeedbackIteration=1` |
+| `DPDout_Nokia.mat` | `DPDout_Nokia`、当前 `iter`、`nextFeedbackIteration`、`DPDOutputID`，可选 session/透传字段 |
+| `symbolEVM.mat` | legacy `symbolEVM` 向量 |
+| `sync_dat.txt` | 进程内心跳计数 |
 
-这些 metrics 没有单独写入文件。服务随后计算 `symbol_evm_mean_percent`，仅用于本次日志局部字典，不回写 `state.last_metrics`。
+`Reset=true` 仍保留历史 reset ACK 行为：配置 ACK 后另写 `ACK_DPDin.mat` 中的 `ACK=0`。
 
-### 9.2 Symbol EVM
+### 5.3 可选现代绑定
 
-`symbol_evm()` 不是网格级 NR 解调，而是按估算的 OFDM symbol 边界比较两个时域波形：
+DPD 输入可携带 `session_id/SessionID/SessionId/IT_ID`。反馈可携带同一 session、
+`iteration/Iteration/feedbackIteration/ITNum` 和 `DPDInputID/DPDOutputID/input_id/InputID`。
+任何已提供字段都必须与当前状态一致，否则拒绝反馈；至少提供并通过一个绑定字段时记录
+`feedback_binding_verified=true`。无绑定字段的旧文件继续兼容，但该轮明确记录 false。
 
-1. 测量和参考截为共同最短长度，并分别归一化到单位 RMS。
-2. 带宽严格等于 `20e6` 时选择 15 kHz SCS，其他带宽一律选择 30 kHz SCS。
-3. 从内置 RB 表中选择最接近的带宽项，计算 NFFT、过采样比和 CP 长度。表中虽有 60 kHz 数据，当前选择逻辑不会使用它。
-4. 长度不足一个最短 symbol 时，返回一个由全局 NMSE 换算的百分比。
-5. 否则逐个跳过 CP，对完整 NFFT 窗计算 `100 * ||measured-reference|| / ||measured||`。
+内容 SHA-256 指纹用于相同输入会话识别、反馈幂等去重和输出绑定。不同外部 session 的新输入会先
+重置状态。反馈在状态提交后若文件输出失败，原样重放仍可能被去重，因此上游应使用绑定字段并监控
+输出，而不能把该路径当成完整事务日志。
 
-函数支持传入频域 equalizer，且只在 equalizer 长度等于 NFFT 时应用；当前服务调用没有传该参数，所以 `enableEq` 不会启用均衡。
+## 6. 配置与会话状态
 
-### 9.3 日志和心跳
+`LegacyConfig` 同时覆盖旧字段和新增强类型字段。旧的 `run_idealDPD`、`enILC`、`idealDPD` 只作为
+兼容元数据，不选择 MARS/MADE。重要新增字段包括 `ILCBackwardMode`、`ILCCalibrationMode`、
+`ILCCalibrationCoefficient`、PA 模型 order/depth/ridge/validation 门限、LM damping、CG 上限/容差、
+trust ratio、输入 RMS/peak/PAPR 限制和模型 fallback。完整字段表见
+[algorithm_design.md](algorithm_design.md)。
 
-启动、停止、配置加载、输入接收、重复反馈、每轮 NMSE/EVM、`safeBack` 清理和异常都会通过 Python logging 输出。没有结构化日志、metrics endpoint 或外部监控集成。
+影响目标、校准或更新律的字段进入 `algorithm_config_fingerprint()`。非 legacy 会话中，已经加载过的
+算法配置发生变化会自动重置状态；legacy 模式为兼容旧控制器保留原会话。显式 `Reset=true` 对所有
+模式重置。
 
-心跳计数器只在内存中递增，进程重启后从 1 重新开始。心跳文件只能证明最近一次周期写入成功，不包含时间戳、进程 ID、会话或算法健康状态。
+`SessionState` 保存：参考与当前 DPD、下一反馈迭代号、输入/反馈/输出/配置指纹、冻结反馈校准、
+绑定验证状态、外部 session ID 和最近 metrics。新参考清除当前 DPD、反馈/输出指纹、校准与 metrics，
+迭代号回到 1。状态只在内存中，进程重启不会恢复。
 
-心跳循环没有捕获 `write_text()` 异常。若一次心跳写入失败，心跳线程会退出，但主服务和 watchdog 仍可继续运行；当前没有线程存活检查或自动重启。
+## 7. 算法模式
 
-## 10. 错误处理和恢复语义
+| engine / mode | 更新语义 | 校准与用途 |
+| --- | --- | --- |
+| `legacy_ilc / legacy` | 历史 `alpha/gain/phase/FIR` 更新 | 每轮动态 gain/phase 对齐；部署兼容 |
+| `linear_ilc / linear` | 单位 Jacobian scalar ILC | 默认 `auto -> frozen_first` |
+| `instantaneous_gain_ilc / instantaneous_gain` | 逐样点复割线增益的阻尼逆 | 默认 `auto -> frozen_first` |
+| `model_vjp_ilc / model_vjp` | `-mu * J_model^T error` | 每轮在线模型；机制消融 |
+| `model_lm_ilc / model_lm` | 阻尼 normal solve | 在线模型、CG、trust、预测回溯与硬投影 |
 
-异常层次定义为：
+### 7.1 Legacy 路径
+
+legacy 路径保留采样率转换、周期对齐、逐轮 RMS/全局相位归一化、可选 phase preconditioner、
+`alpha`、gain 和两个循环 FIR。反馈长度为 327680 且参考至少 32768 点时，按历史 packed capture
+语义训练 32768 点并把结果重复 10 次。默认 legacy 数值后端使用 PyTorch `complex64`，输出统一回到
+NumPy `complex128`。
+
+legacy 在 `gain_db=0`、`alpha=0`、关闭相位补偿和 FIR、采样率一致时退化为
 
 ```text
-RemoteDPDError
-├── MatProtocolError
-│   └── UnsupportedMatVersion
-└── UnsupportedAlgorithm
+u_(k+1) = u_k + mu * (reference - measured).
 ```
 
-实际使用情况：
+其他 legacy 配置是工程扩展，不应冒充纯公开 linear ILC。
 
-- MAT 读写和 IQ 变量错误包装为 `MatProtocolError`。
-- 缺少 h5py 的 v7.3 回退抛出 `UnsupportedMatVersion`。
-- PyTorch 缺失时，ILC 处理抛出 `RuntimeError`；服务构造本身仍可成功，因为导入错误被延迟到 `process()`。
-- `create_engine()` 对未知名称抛出 `ValueError`，当前不使用已定义的 `UnsupportedAlgorithm`。
-- watchdog 事件路径捕获所有异常、记录日志并继续；没有失败 ACK、隔离目录、重试队列或告警回调。
-- 直接调用 `process_file()` 时异常向上传播，便于测试或由嵌入方自行处理。
+### 7.2 非 legacy 对齐与校准
 
-恢复通常依赖上游修正文件后再次产生事件。反馈去重和“状态先提交、文件后写入”的顺序意味着输出写入失败不能通过原样重放同一反馈恢复；需要新反馈、重置或进程重启来重新进入处理。
+非 legacy 路径先把反馈重采样到输入采样率，再做周期时延对齐。校准模式：
 
-## 11. 扩展设计
+- `auto`：解析为 `frozen_first`；
+- `frozen_first`：首个有效反馈估计复校准系数，后续轮只重估时延并复用系数；
+- `explicit`：使用配置中经过有限、非零校验的复系数；
+- `legacy_dynamic`：每轮重新估计 gain/phase，仅用于兼容或显式消融。
 
-算法层的扩展接口是 `DPDEngine.process(reference, current_output, feedback, state) -> ILCResult`。新引擎类型必须继承 `DPDEngine`，实现 `process()`，并通过 `register_engine(name, engine_type)` 加入进程内 `_ENGINES` 注册表。
+模型模式禁止 `phase_compensate`、非零 `alpha`、`tx_fir` 和 `error_fir`，因为当前模型 Jacobian 没有
+把这些 legacy 预处理算子及其 adjoint 纳入目标。冲突在配置或 engine 构造时拒绝，不静默忽略。
 
-`register_engine()` 要求非空名称和 `DPDEngine` 子类，但按传入名称原样存储；`create_engine()` 会先把查询名称转成小写。因此可被工厂正常查找到的注册名称应使用小写。工厂还会以单个 `ILCConfig` 参数调用引擎构造函数。
+## 8. PA 正向模型与复数反向传播
 
-需要注意当前扩展边界仍有 ILC 假设：
+每轮模型模式从已对齐、已校准的 `(u_k,y_k)` 拟合复系数 memory polynomial：
 
-- `create_engine()` 构造参数类型固定为 `ILCConfig`。
-- 返回值固定为 `ILCResult`。
-- 服务总会计算 symbol EVM，并预期 metrics 中存在用于日志格式化的 `aligned_nmse_db`。
-- CLI 的 `--engine` choices 固定为 `("ilc",)`，程序化注册的新引擎不能直接通过现有 CLI 选择。
+```text
+y_hat[n] = sum(c[p,m] * u[n-m] * (abs(u[n-m])/scale)^(p-1)).
+```
 
-因此当前接口适合 ILC 变体的程序化扩展；若要支持结构明显不同的模型 DPD，还需要同步泛化配置类型、结果协议、日志字段和 CLI 注册机制。
+默认 orders 为 `1,3,5,7,9`，memory depth 为 3。输入按稳健包络分位数缩放，设计矩阵按列 RMS
+归一化，通过增广 least-squares 求 ridge 解，不显式求 normal equation 的逆。固定 block split
+分别计算 train/validation NMSE；样本不足、非有限、秩/条件数或 validation 不合格均产生结构化
+失败原因。生产文件服务按配置执行 `linear` fallback 或 `hold`。
 
-文件协议与算法边界已经通过 `protocol.py`、`config.py` 和 `DPDEngine` 分层。新增 MAT 别名应放在协议或配置层，新增纯数值算法不应直接读写文件。
+memory polynomial 对复输入不是 complex-linear。实现把复向量视为 `2N` 维实向量，以
+`real(vdot(a,b))` 为内积，解析实现 real-linear JVP/VJP，并满足：
 
-## 12. 测试现状
+```text
+real(vdot(v, jvp(u,h))) == real(vdot(vjp(u,v), h)).
+```
 
-仓库使用 Python `unittest`，当前测试覆盖：
+模型系数在本轮拟合后视为常量；反向传播不穿过 LS、时延或校准估计。PyTorch autograd 只用于独立
+数值 oracle 测试，不进入生产模型热路径。
 
-- 整数延迟及复增益的波形对齐。
-- 十捕获反馈的识别和平均结果长度。
-- NumPy 循环 FIR 的长度保持。
-- MAT struct 的保存和加载回环。
-- 配置、DPD 输入、反馈、DPD 输出和 EVM 的同步端到端文件交换。
-- 完全相同反馈的幂等去重和迭代号不推进。
+## 9. LM、预测与输入安全
 
-当前没有直接覆盖：watchdog 真实事件和稳定等待、心跳、`safeBack`、配置字段全部别名、reset ACK 的变量名差异、v7.3/h5py、采样率变化、327680 特殊路径、相位补偿、两个 Torch FIR、CUDA、输出失败后的状态一致性及 symbol EVM 的长捕获路径。
+`model_lm` 在当前线性化点求解：
 
-标准验证命令为：
+```text
+(J.T * J + damping * I) * delta = -J.T * (measured - desired).
+```
+
+实现用 JVP/VJP 和实内积 truncated CG，不构造完整 Jacobian。damping 至少 `1e-8`；候选步依次经过
+RMS trust region、输入 RMS/peak/PAPR 投影，以及锚定模型预测：
+
+```text
+predicted_output = measured + model(input + delta) - model(input).
+```
+
+预测不下降时按固定因子回溯。投影后的有效更新还必须仍在 trust ball 内；非有限、负曲率、模型失败、
+投影失败或响应过小都有明确停止原因。高残差且模型响应近零时可返回 `saturation_limited` 并保持小步
+或零步，不能通过放大伪逆尝试恢复不可达目标。
+
+安全投影对 peak、RMS、PAPR 共同生效。没有配置上限时，对应约束不启用；legacy 的历史 `PAPR`
+字段仍不是该安全投影，非 legacy 应使用 `ILCMaxInputPaprDb`。
+
+## 10. 指标与可观测性
+
+文件 engine 的公共 metrics 包含对齐 NMSE、校准系数、时延、捕获数、反馈/输出 RMS、更新 RMS、
+停止原因、安全激活状态，以及模型和 CG 诊断。生产闭环没有解析 PA oracle，因此不产生可解释的
+`identity_gradient_cosine` 或 `learned_gradient_cosine`；这两个名称只属于研究 runner 的合成 PA
+诊断。
+
+服务写出的 `symbolEVM` 是 legacy 时域 symbol 估算，不是完整 NR 接收机指标。研究 runner 另行计算
+固定 native-domain tracking NMSE、sampled-band 双边 ACLR、known-grid raw/one-tap EVM、固定包络
+分箱 AM/AM/AM/PM、输入限制和梯度方向诊断；两套指标不能互换命名。
+
+## 11. 研究 runner、产物与恢复
+
+研究 runner 使用 `ExperimentProtocol` 枚举不可变 trajectory spec，并直接调用合成 PA 与
+`remote_dpd.learning`。仿真域明确使用 unity `synthetic_pa_native_domain` 校准：不存在额外测量链，
+也不会校准掉 PA 自身非线性。详细 cell、stress 参数、统计和失败规则见
+[experiment_protocol.md](experiment_protocol.md)。
+
+每个 study 写入：
+
+```text
+manifest.json
+expected_ids.json
+specs.json
+seeds.csv
+run_summary.json
+shards/*.json
+work/*/checkpoint.json + arrays.<sha>.npz
+waveforms/*/kXXX.npz
+```
+
+manifest 绑定 code/configuration/protocol/matrix/environment 五个 SHA-256，并记录环境、Git、完整命令、实际
+cell、可达性、安全限制和固定分箱。单轨迹 shard 具有 canonical payload checksum 并原子替换；
+checkpoint 保存输入、下一迭代号、PRNG、damping、模型和逐轮 metrics。恢复只跳过经过全部校验的
+shard，调度期间检测科学代码或配置改变即停止。
+
+runner 使用独立进程的滑动窗口调度；每个 worker 把 BLAS/OpenMP/PyTorch 线程限制为 1。worker 数
+属于容量参数，不改变 trajectory ID。磁盘、RSS、产物预算和预计时长在调度门检查；算法失败作为
+科学结果保留，只有基础设施异常允许有限重试。
+
+分析层重新验证 manifest、expected ID、spec、shard checksum、矩阵和配对，要求每条轨迹有完整
+`k=0..K` 评估。图表和表格只从已验证数据生成。完整命令与目录说明见
+[reproducibility.md](reproducibility.md)。
+
+## 12. 并发、一致性与安全边界
+
+- 文件服务的锁保护配置/engine 替换、参考状态和一次反馈计算/状态提交，但文件读取和多个输出不在
+  一个事务内；
+- 多个服务实例不能监听同一目录；
+- 服务重启丢失会话，也不接管启动前静止文件；
+- `safeBack` 能删除根目录普通文件，监听目录必须受信任、专用并限制写权限；
+- 输出采样率字段当前不执行二次输出重采样；`enableEq` 不会自动给 legacy EVM 注入 equalizer；
+- 周期对齐、FIR、合成动态 PA 均采用循环边界，适用于冻结的周期 ILC 波形；
+- 真实生产捕获没有 oracle 梯度，研究中的方向余弦不能当作线上可测 telemetry；
+- 仿真成功不能替代真实 PA 的闭环、安全、频谱模板或标准测试。
+
+## 13. 验证
+
+仓库测试覆盖 legacy primitive、配置冲突与反馈绑定、解析 PA 模型 JVP/VJP、PyTorch oracle、
+LM/CG/trust/safety、合成场景、冻结矩阵、hash/恢复/失败保留、统计与分析产物。标准命令：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-## 13. 已知约束与设计结论
-
-- 文件到达顺序是协议的一部分：至少需要先有 DPD 输入，再有反馈；配置可省略而使用默认值。
-- 仅使用内容指纹保证输入会话和反馈迭代的幂等性，没有请求 ID、文件版本或持久化去重记录。
-- 服务重启会丢失全部状态，也不会接管启动前已经存在但不再变化的输入文件。
-- 单个 MAT 文件采用原子替换，但一次反馈涉及状态、DPD 输出和 EVM 三个独立提交点，整体不是事务。
-- 监听目录必须是服务专用且可信的目录，尤其因为 `safeBack` 能删除其根目录普通文件。
-- 输入/反馈对齐采用周期信号假设；FFT 插值、分数延迟和 FIR 都具有循环边界语义。
-- `OutputSamplingRate`、`PAPR`、`enableEq` 和 `debug` 是已解析但未生效的配置；旧算法选择字段只是兼容元数据。
-- 当前性能主要受 32 倍 FFT 对齐和 PyTorch 张量转换影响。实现没有批处理队列、背压、资源上限或超长输入保护。
-- 当前最可靠的运行模型是：一个服务进程对应一个供应商目录，由一个上游控制器按配置、参考、反馈的顺序串行驱动。
+测试通过证明实现满足仓库中的数值和协议契约，不等同于外部硬件验证。

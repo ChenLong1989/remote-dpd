@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from .algorithms import DPDEngine, ILCConfig, create_engine
-from .config import LegacyConfig, config_from_mat
+from .config import LegacyConfig, algorithm_config_fingerprint, config_from_mat
 from .dsp import align_and_average, nmse_db
 from .exceptions import MatProtocolError
 from .metrics import symbol_evm
@@ -175,16 +175,31 @@ class RemoteDPDService:
         path = resolve_file(event_path.parent, event_path.name)
         payload = load_mat(path)
         config = config_from_mat(payload, supplier_name=self.supplier_name)
+        engine = create_engine(self.engine_name, ILCConfig.from_legacy(config))
+        config_id = algorithm_config_fingerprint(config)
         with self._lock:
+            effective_mode = _effective_mode(self.engine_name, config.ilc_backward_mode)
+            config_changed = (
+                self.state.last_config_id is not None
+                and self.state.last_config_id != config_id
+            )
             self.config = config
-            self.engine = create_engine(self.engine_name, ILCConfig.from_legacy(config))
-            if config.reset:
+            self.engine = engine
+            if config.reset or (config_changed and effective_mode != "legacy"):
                 self.state.reset()
+                self.state.last_config_id = config_id
                 self._write_ack(1)
-                time.sleep(0.05)
-                save_mat(self.directory / DPD_IN_ACK_FILE, {"ACK": np.asarray(0, dtype=np.int8)})
-                self.log.info("configuration reset acknowledged")
+                if config.reset:
+                    time.sleep(0.05)
+                    save_mat(self.directory / DPD_IN_ACK_FILE, {"ACK": np.asarray(0, dtype=np.int8)})
+                self.log.info(
+                    "configuration reset acknowledged: explicit=%s changed=%s mode=%s",
+                    config.reset,
+                    config_changed,
+                    effective_mode,
+                )
                 return
+            self.state.last_config_id = config_id
             ack = 1 if self.state.reference is None else 0
             self._write_ack(ack)
             self.log.info("configuration loaded: mu=%s starting_sample=%s", config.ilc_mu, config.starting_sample)
@@ -195,30 +210,68 @@ class RemoteDPDService:
         reference = as_vector(value, "DPD_In_cut")
         start = max(0, self.config.starting_sample - 1)
         reference = reference[start:]
+        if reference.size == 0:
+            raise MatProtocolError("DPD_In_cut is empty after StartingSample cropping")
+        incoming_session = _optional_binding_text(
+            payload,
+            "session_id",
+            "SessionID",
+            "SessionId",
+            "IT_ID",
+        )
         with self._lock:
+            if (
+                incoming_session is not None
+                and self.state.external_session_id is not None
+                and incoming_session != self.state.external_session_id
+            ):
+                self.state.reset()
             changed = self.state.set_reference(reference)
-        save_mat(self.directory / DPD_IN_ACK_FILE, {"ACK_DPDin": np.asarray(1, dtype=np.int8)})
+            if incoming_session is not None:
+                self.state.external_session_id = incoming_session
+            input_id = self.state.last_input_id
+        save_mat(
+            self.directory / DPD_IN_ACK_FILE,
+            {
+                "ACK_DPDin": np.asarray(1, dtype=np.int8),
+                "DPDInputID": input_id or "",
+                "expectedFeedbackIteration": np.asarray(1, dtype=np.int64),
+            },
+        )
         self.log.info("DPD input received: samples=%d new_session=%s", reference.size, changed)
 
     def _handle_feedback(self, event_path: Path) -> None:
         payload = load_mat(resolve_file(event_path.parent, event_path.name))
         feedback = as_vector(first_value(payload, "FB_Signal_cut", "FB_Signal", "feedback"), "FB_Signal_cut")
-        reference = self.state.reference
-        if reference is None:
-            raise MatProtocolError("FB_Signal received before DPD_in")
         feedback_id = waveform_fingerprint(feedback)
         with self._lock:
+            reference = self.state.reference
+            if reference is None:
+                raise MatProtocolError("FB_Signal received before DPD_in")
+            binding_verified = self._validate_feedback_binding(payload)
             if feedback_id == self.state.last_feedback_id:
                 self.log.info("duplicate FB_Signal ignored")
                 return
             result = self.engine.process(reference, self.state.current_dpd, feedback, self.state)
             self.state.current_dpd = result.output
             self.state.last_feedback_id = feedback_id
+            self.state.last_output_id = waveform_fingerprint(result.output)
+            self.state.feedback_binding_verified = binding_verified
+            result.metrics["feedback_binding_verified"] = binding_verified
             self.state.last_metrics = result.metrics
             iteration = self.state.iteration
             self.state.iteration += 1
+            output_id = self.state.last_output_id
+            external_session = self.state.external_session_id
         output = np.concatenate((np.zeros(max(0, self.config.starting_sample - 1), dtype=np.complex128), result.output))
-        output_payload = {"DPDout_Nokia": output, "iter": np.asarray(iteration, dtype=np.int64)}
+        output_payload = {
+            "DPDout_Nokia": output,
+            "iter": np.asarray(iteration, dtype=np.int64),
+            "nextFeedbackIteration": np.asarray(iteration + 1, dtype=np.int64),
+            "DPDOutputID": output_id or "",
+        }
+        if external_session is not None:
+            output_payload["session_id"] = external_session
         for name in ("ITNum", "IT_ID"):
             if name in payload:
                 output_payload[name] = payload[name]
@@ -231,7 +284,65 @@ class RemoteDPDService:
         )
         save_mat(self.directory / SYMBOL_EVM_FILE, {"symbolEVM": evm})
         metrics = result.metrics | {"symbol_evm_mean_percent": float(np.nanmean(evm)) if evm.size else float("nan")}
-        self.log.info("iteration=%d samples=%d aligned_nmse=%.3f dB evm=%.3f%%", iteration, output.size, metrics["aligned_nmse_db"], metrics["symbol_evm_mean_percent"])
+        with self._lock:
+            self.state.last_metrics = metrics
+        self.log.info(
+            "iteration=%d samples=%d aligned_nmse=%.3f dB evm=%.3f%% binding_verified=%s",
+            iteration,
+            output.size,
+            metrics["aligned_nmse_db"],
+            metrics["symbol_evm_mean_percent"],
+            binding_verified,
+        )
+
+    def _validate_feedback_binding(self, payload: dict[str, Any]) -> bool:
+        """Validate optional modern binding fields without breaking old files."""
+        verified = False
+        session = _optional_binding_text(
+            payload,
+            "session_id",
+            "SessionID",
+            "SessionId",
+            "IT_ID",
+        )
+        if session is not None:
+            if self.state.external_session_id is None:
+                raise MatProtocolError("feedback has a session identifier but DPD input did not")
+            if session != self.state.external_session_id:
+                raise MatProtocolError(
+                    f"feedback session {session!r} does not match {self.state.external_session_id!r}"
+                )
+            verified = True
+
+        iteration_value = _optional_binding_integer(
+            payload,
+            "iteration",
+            "Iteration",
+            "feedbackIteration",
+            "ITNum",
+        )
+        if iteration_value is not None:
+            if iteration_value != self.state.iteration:
+                raise MatProtocolError(
+                    f"feedback iteration {iteration_value} does not match expected {self.state.iteration}"
+                )
+            verified = True
+
+        supplied_waveform_id = _optional_binding_text(
+            payload,
+            "DPDInputID",
+            "DPDOutputID",
+            "input_id",
+            "InputID",
+        )
+        if supplied_waveform_id is not None:
+            expected = self.state.last_output_id or self.state.last_input_id
+            if expected is None or supplied_waveform_id != expected:
+                raise MatProtocolError(
+                    f"feedback waveform identifier {supplied_waveform_id!r} does not match expected input"
+                )
+            verified = True
+        return verified
 
     def _write_ack(self, value: int) -> None:
         save_mat(self.directory / CONFIG_ACK_FILE, {"ACK": np.asarray(value, dtype=np.int8), "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -254,3 +365,51 @@ class RemoteDPDService:
                 removed += 1
         self.state.reset()
         self.log.info("safeBack cleared %d files and reset state", removed)
+
+
+def _effective_mode(engine_name: str, configured_mode: str) -> str:
+    aliases = {
+        "legacy_ilc": "legacy",
+        "linear_ilc": "linear",
+        "instantaneous_gain_ilc": "instantaneous_gain",
+        "model_vjp_ilc": "model_vjp",
+        "model_lm_ilc": "model_lm",
+    }
+    return aliases.get(engine_name.lower(), configured_mode)
+
+
+def _optional_binding_text(payload: dict[str, Any], *names: str) -> str | None:
+    for name in names:
+        if name not in payload:
+            continue
+        array = np.asarray(payload[name])
+        if array.size != 1:
+            raise MatProtocolError(f"binding field {name} must be scalar")
+        item = array.reshape(-1)[0]
+        if isinstance(item, bytes):
+            item = item.decode("utf-8", errors="strict")
+        if isinstance(item, np.generic):
+            item = item.item()
+        value = str(item).strip()
+        if not value:
+            raise MatProtocolError(f"binding field {name} must not be empty")
+        return value
+    return None
+
+
+def _optional_binding_integer(payload: dict[str, Any], *names: str) -> int | None:
+    for name in names:
+        if name not in payload:
+            continue
+        array = np.asarray(payload[name])
+        if array.size != 1:
+            raise MatProtocolError(f"binding field {name} must be scalar")
+        try:
+            numeric = float(array.reshape(-1)[0])
+            value = int(numeric)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise MatProtocolError(f"binding field {name} must be an integer") from exc
+        if not np.isfinite(numeric) or numeric != value or value < 1:
+            raise MatProtocolError(f"binding field {name} must be a positive integer")
+        return value
+    return None

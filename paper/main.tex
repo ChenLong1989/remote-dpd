@@ -1,0 +1,745 @@
+% Compile with XeLaTeX + BibTeX + XeLaTeX + XeLaTeX.
+\documentclass[UTF8,zihao=-4,a4paper]{ctexart}
+
+\usepackage[a4paper,margin=2.35cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.15em}
+\setlist{nosep,leftmargin=2em}
+\captionsetup{font=small}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcommand{\AnalysisRoot}{../artifacts/frozen_release/analysis}
+\newcommand{\VerifiedFigure}[2]{%
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}{%
+    \fbox{\parbox[c][4.2cm][c]{0.92\linewidth}{\centering
+      请先按冻结协议生成并验证分析图：\\\texttt{\detokenize{#1}}}}}}
+
+\newcommand{\PaperTitleCN}{基于在线功率放大器正向模型反向传播的受保护逐波形迭代学习预失真}
+\newcommand{\PaperTitleEN}{Safeguarded Waveform Iterative Learning Predistortion via Backpropagation Through an Online Power-Amplifier Forward Model}
+
+\title{\PaperTitleCN\\[0.5em]\large\PaperTitleEN}
+\author{匿名作者}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+逐波形迭代学习控制（iterative learning control, ILC）可直接利用重复任务的功率放大器（power
+amplifier, PA）反馈更新输入波形。经典标量更新把输出位置的跟踪误差直接加到输入，相当于用单位
+映射近似 PA 的局部 Jacobian；在弱非线性区该近似可以实用，但在高功率压缩、小斜率区以及低功率
+强 AM/PM 区未必提供可靠的下降方向。本文研究一种明确受限的组合方案：每个 ILC 外层轮次使用当轮
+输入与测量输出，通过带 ridge 的复系数 memory-polynomial 最小二乘拟合在线 PA 正向模型；随后以
+复数实内积定义的 real-linear JVP/VJP 把真实测量残差传回输入，并以 matrix-free 阻尼
+Gauss--Newton/Levenberg--Marquardt（LM）求解候选步。更新还包含 RMS trust region、锚定模型增量
+预测、回溯与输入 RMS/峰值/PAPR 硬约束。为避免将数值机制结论外推为硬件结论，本文采用固定生成的
+NR-like OFDM 与合成 PA，预注册两个可达主要场景、两个独立压力场景、配对 seed、失败编码和统计
+判据。确认实验包含 2240 条完整轨迹。相对 linear ILC，learned safeguarded LM 在 AM/AM 0.97
+单元把配对 median AUEC 降低 54.00\%，最终 NMSE 改善 168.02 dB，但成功率差为 0 个百分点，因而
+未通过预注册总判据；在 AM/PM $135^\circ$ 单元，三项效果分别为 69.01\%、12.42 dB 和
+67.5 个百分点，且发散与约束违规差均为 0，故通过总判据。Instantaneous-gain ILC 是不可忽略的强
+基线：它在 AM/PM 主单元达到 100\% 成功率和 $-300$ dB 统计 floor，明显优于 learned LM 的
+67.5\% 与 $-33.33$ dB；在 AM/AM 中则与 learned LM 同为 100\% 成功，AUEC 仅相差约 4\%。本文不
+主张首次将 PA 模型、Jacobian 或反向传播用于 DPD，也不声称所提组合优于全部公开基线。
+\end{abstract}
+
+\noindent\textbf{关键词：} 数字预失真；迭代学习控制；功率放大器；正向模型；向量--Jacobian
+乘积；Levenberg--Marquardt；可复现实验
+
+\section*{English Abstract}
+\addcontentsline{toc}{section}{English Abstract}
+\begin{center}
+  \textbf{\PaperTitleEN}
+\end{center}
+\noindent
+Waveform iterative learning control (ILC) updates a repeatable power-amplifier (PA) excitation directly
+from measured tracking residuals. The scalar update implicitly replaces the local PA Jacobian by the
+identity, an approximation that need not remain a useful descent map under strong high-power compression
+or low-envelope AM/PM distortion. This paper studies a deliberately bounded combination: at every outer
+ILC iteration, a complex-coefficient memory-polynomial PA forward model is fitted by ridge least squares
+to the current input and measured output; real-linear Jacobian--vector and vector--Jacobian products then
+propagate the measured residual to the input; and a matrix-free damped Gauss--Newton/Levenberg--Marquardt
+step is protected by an RMS trust region, anchored model-delta prediction, backtracking, and hard input
+constraints. Evaluation is preregistered on generated NR-like OFDM signals and synthetic PA mechanisms,
+with paired seeds, explicit failure encoding, reachable primary cells, and separate stress tests. The
+study does not claim the first use of PA models, Jacobians, or backpropagation for digital predistortion;
+it examines the failure boundary of the identity-Jacobian approximation in waveform ILC and subjects the
+online-model/safeguarded-solver combination to falsifiable criteria. In 2,240 complete confirmatory
+trajectories, safeguarded learned LM reduced paired median AUEC by 54.00\% and improved final NMSE by
+168.02 dB against linear ILC in the AM/AM 0.97 cell, but its success-rate gain was 0 percentage points;
+that cell therefore failed the preregistered joint criterion. In the AM/PM $135^\circ$ cell, the
+corresponding effects were 69.01\%, 12.42 dB, and 67.5 percentage points, with zero divergence and
+constraint-rate differences, so the joint criterion passed. Instantaneous-gain ILC remained the stronger
+AM/PM baseline, reaching 100\% success and the $-300$ dB statistical floor versus 67.5\% and $-33.33$ dB
+for learned LM. The results support a conditional comparison with linear ILC, not superiority over all
+published baselines or transfer to hardware.
+
+\vspace{0.6em}
+\noindent\textbf{Keywords:} digital predistortion; iterative learning control; power amplifier; forward
+model; vector--Jacobian product; Levenberg--Marquardt; reproducible simulation
+
+\section{引言}
+
+射频功率放大器的效率需求通常推动器件工作点接近非线性区，由此产生幅度压缩、相位旋转和记忆效应。
+数字预失真（digital predistortion, DPD）以数字域逆映射补偿这些效应。与一次性辨识固定逆模型不同，
+逐波形 ILC 利用同一任务波形可重复施加的条件，把整段输入样本作为学习变量，并根据每轮反馈迭代逼近
+所需 PA 输出。Chani-Cahuana 等给出了用于 RF PA 线性化的标量和瞬时增益 ILC，并将学得的波形用于
+后续 DPD 建模\citep{chani2016ilc}；Schoukens 等从 plant-inversion ILC 角度研究了 PA 预逆，使用
+频率相关 BLA inverse，并指出强非线性会限制线性近似的有效性\citep{schoukens2017preinverse}。
+
+令第 $k$ 轮输入、PA 输出和期望输出分别为 $\bm u_k$、$\bm y_k$ 和 $\bm d$。最简标量更新
+$\bm u_{k+1}=\bm u_k+\mu(\bm d-\bm y_k)$ 把输出残差不经变换地放回输入位置。从局部优化观点看，
+这等价于把 PA 的 real-linear Jacobian 近似为单位映射。若 PA 在相关工作区内近似单位复增益且斜率
+变化温和，该近似可能给出可用方向；若高幅度样点进入饱和附近的小斜率区，或者低幅度样点遭受剧烈
+AM/PM 旋转，同一个近似便可能产生过小、偏转甚至局部相反的更新。瞬时复增益能够恢复逐点复数旋转，
+但仍忽略幅度相关导数、跨样本记忆和不可达目标。
+
+通过 PA 正向模型反向传播并非本文首创。神经网络 DPD 的直接学习已使用冻结的神经网络 PA 模型完成
+反向传播\citep{tarver2019backprop}，后续工作还明确覆盖了带记忆 PA 模型\citep{loebl2023memorybackprop}。
+此外，瞬时复增益 ILC 已有近期系统研究\citep{wei2026icg}。因此，本文不提出宽泛的“首次 backward”
+或“首次 Jacobian ILC”主张，而是把问题收窄为：在逐波形 ILC 中，每轮在线拟合的轻量正向模型能否
+为真实测量残差提供足够可靠的梯度信息；与 raw VJP 相比，受保护的 matrix-free LM 是否能在预注册
+的可达强失真单元中改善固定指标，并在不可达或局部反斜率区域以可审计方式失败。
+
+本文的实现性贡献与评价范围如下。
+\begin{enumerate}
+  \item 将公开 scalar linear ILC、阻尼 instantaneous-gain ILC 与仓库历史 legacy 路径分开定义，
+        避免把逐轮动态校准和工程 FIR 扩展误标为公开公式的原样复现。
+  \item 每轮以确定性 train/validation 划分和带 ridge 的复数最小二乘拟合 memory-polynomial PA
+        正向模型；模型提供经过独立数值契约验证的 real-linear JVP/VJP，但梯度不穿过 LS 求解、
+        校准或时延估计。
+  \item 在同一在线模型上实现 raw VJP 机制消融与 matrix-free 阻尼 Gauss--Newton/LM 主方法；后者
+        联合 trust region、锚定模型增量、回溯和最终硬输入投影，并显式编码模型失败、数值失败与
+        饱和受限状态。
+  \item 冻结可执行仿真协议：两类主要失真机制、独立压力与模型失配研究、配对随机种子、固定迭代
+        预算、层级配对 bootstrap、Holm 校正以及预注册成功与安全阈值。所有确定性算法失败均保留。
+\end{enumerate}
+本文只报告合成波形和合成 PA 的数值机制研究，不涉及真实 GaN/Doherty PA、PAE、产业部署或
+3GPP 合规结论。
+
+\section{相关工作与研究边界}
+
+\subsection{PA 逐波形 ILC}
+
+Chani-Cahuana 等的 scalar linear ILC 使用固定学习增益直接累加跟踪误差；其 instantaneous-gain
+版本则以 $y_k[n]/u_k[n]$ 构造逐点对角 learning matrix\citep{chani2016ilc}。本文使用的阻尼版本
+在低输入样点设门限，并以 Tikhonov 分母限制小增益的噪声放大，因此是公开思想的可复现工程基线，
+不是对未正则化公式的逐项复刻。Wei 等进一步研究了基于瞬时复增益的 ILC，并在得到目标输入后拟合
+GMP 预失真器\citep{wei2026icg}。
+
+Schoukens 等采用 BLA inverse 作为频率相关 learning filter\citep{schoukens2017preinverse}。BLA
+能够处理主要线性动态，但它仍是给定激励类下的线性近似。本文未把任意 FIR 的存在视作 BLA inverse，
+也没有把 legacy 路径的相位预条件器称为完整瞬时增益逆。legacy 路径保留的目的仅是兼容既有文件服务
+语义并提供回归对照。
+
+\subsection{PA 行为模型与模型反向传播}
+
+Memory polynomial 是 Volterra 派生 PA/DPD 行为模型中的经典结构；GMP 进一步引入领先和滞后的
+包络交叉项\citep{morgan2006gmp}。本文选择不含交叉项的复系数 memory polynomial，以换取每轮
+确定性 LS 拟合和解析 JVP/VJP 的简洁性。这是模型复杂度取舍，而非结构创新。
+
+Tarver 等将神经网络 DPD 与已训练的神经网络 PA 模型级联，通过 PA 模型反向传播端到端损失
+\citep{tarver2019backprop}；Loebl 等将这一直接学习思路扩展到带记忆 PA 模型并进行了宽带 PA
+测量评价\citep{loebl2023memorybackprop}。这些工作已经覆盖“PA forward model + backward +
+direct DPD learning”的核心概念。本文与其差异在于优化变量是有限长度任务波形而非 DPD 网络权重，
+PA 模型在每个 ILC 轮次重拟合，并使用受输入约束的 matrix-free LM；这些差异界定研究对象，但不被
+解释为全球首次性证据。
+
+\section{问题定义与算法}
+
+\subsection{固定域目标与复数实内积}
+
+在一个长度为 $N$ 的重复任务上，令真实 PA 映射为
+$\bm y_k=\mathcal{F}(\bm u_k)$，目标函数为
+\begin{equation}
+  \mathcal{L}(\bm u_k)=\frac{1}{2}\lVert \mathcal{F}(\bm u_k)-\bm d\rVert_2^2,
+  \qquad \bm e_k=\bm y_k-\bm d .
+  \label{eq:objective}
+\end{equation}
+所有复向量导数均解释为 $2N$ 维实向量上的导数，内积固定为
+\begin{equation}
+  \langle \bm a,\bm b\rangle_{\mathbb{R}}
+  =\operatorname{Re}\{\bm a^{\mathrm H}\bm b\}.
+  \label{eq:real-inner}
+\end{equation}
+研究 runner 在合成 PA 原生数值域使用显式 unity calibration。该选择表示输入、输出和目标本来处于
+同一数值域，不是一次虚构的低功率硬件标定，也不会消除 PA 自身 AM/AM、AM/PM 或动态响应。
+
+\subsection{基线更新}
+
+公开 scalar linear ILC 写为
+\begin{equation}
+  \bm u_{k+1}=\bm u_k+\mu(\bm d-\bm y_k).
+  \label{eq:linear-ilc}
+\end{equation}
+阻尼 instantaneous-gain ILC 对满足输入门限的样点使用
+\begin{align}
+  \widehat g_k[n]&=\frac{y_k[n]}{u_k[n]},\\
+  \Delta u_k[n]&=\mu\,
+  \frac{\widehat g_k[n]^*}{|\widehat g_k[n]|^2+\lambda}
+  \bigl(d[n]-y_k[n]\bigr),
+  \label{eq:instantaneous}
+\end{align}
+低于门限的样点保持不变。`legacy\_ilc' 则保留历史实现的逐轮 RMS/全局相位归一化、可选相位
+预条件与 centered circular FIR；只有在校准为恒等、增益为 0 dB、混合系数为零、相位补偿和 FIR
+均关闭等收窄条件下，它才退化为\cref{eq:linear-ilc}，因此不作为公开 linear ILC 的同义词。
+
+\subsection{在线 memory-polynomial 正向模型}
+
+给定当前输入 $\bm u_k$，模型以稳健包络尺度 $s_k$ 归一化，写为
+\begin{equation}
+  \widehat y_k[n]
+  =\sum_{p\in\mathcal{P}}\sum_{m=0}^{M-1}
+  c_{p,m}\,u_k[n-m]
+  \left(\frac{|u_k[n-m]|}{s_k}\right)^{p-1},
+  \label{eq:mp}
+\end{equation}
+其中 $\mathcal{P}=\{1,3,5,7,9\}$，默认记忆深度 $M=3$。$s_k$ 为训练输入包络的 99.9\%
+分位数，并设置正下限。每个基函数列先做 RMS 归一化，再解带 ridge 的增广复数最小二乘：
+\begin{equation}
+  \widehat{\bm c}_k
+  =\arg\min_{\bm c}
+  \lVert\bm A_{\mathrm{tr}}\bm c-\bm y_{\mathrm{tr}}\rVert_2^2
+  +\rho\lVert\bm c\rVert_2^2 .
+  \label{eq:ridge-ls}
+\end{equation}
+连续 256-sample block 中每五块的第五块固定作为 validation，其余进入 LS；validation 不参与
+系数求解。秩、条件数、训练/验证 NMSE 与回退原因均随轨迹保存。样本不足、非有限、秩不足、条件数
+超限或验证误差不合格时，模型方法执行显式 linear fallback，不复用不匹配的旧模型，除非该行为本身
+是预注册消融。
+
+\subsection{Real-linear JVP/VJP}
+
+由于 $u|u|^{p-1}$ 同时依赖 $u$ 与 $u^*$，\cref{eq:mp} 的微分是 real-linear，而非通常意义的
+complex-linear。令在线模型在 $\bm u_k$ 的实 Jacobian 为 $\widehat{\bm J}_k$。实现提供
+\begin{align}
+  \operatorname{JVP}_k(\bm h)&=\widehat{\bm J}_k\bm h,\\
+  \operatorname{VJP}_k(\bm v)&=\widehat{\bm J}_k^{\mathsf T}\bm v,
+\end{align}
+并以\cref{eq:real-inner}满足伴随恒等式
+\begin{equation}
+  \langle \bm v,\operatorname{JVP}_k(\bm h)\rangle_{\mathbb R}
+  =\langle \operatorname{VJP}_k(\bm v),\bm h\rangle_{\mathbb R}.
+  \label{eq:adjoint}
+\end{equation}
+解析实现通过有限差分、显式小尺寸 $2N\times2N$ 实 Jacobian、共轭映射与独立自动微分 oracle
+交叉验证。模型系数在当轮拟合完成后视为常量；反向传播不穿过\cref{eq:ridge-ls}。
+
+\subsection{Raw VJP 与受保护 matrix-free LM}
+
+Raw VJP 消融直接使用
+\begin{equation}
+  \bm g_k=\operatorname{VJP}_k(\bm y_k-\bm d),\qquad
+  \bm u_{k+1}=\bm u_k-\mu\bm g_k .
+  \label{eq:raw-vjp}
+\end{equation}
+该方法用于隔离“把真实残差经模型 backward 传回输入”这一机制，本身没有预测下降或 trust region。
+
+主方法求解阻尼线性化最小二乘步
+\begin{equation}
+  \bigl(\widehat{\bm J}_k^{\mathsf T}\widehat{\bm J}_k+\lambda_k\bm I\bigr)
+  \Delta\bm u_k=-\widehat{\bm J}_k^{\mathsf T}(\bm y_k-\bm d),
+  \label{eq:lm}
+\end{equation}
+其中 normal operator 仅通过 JVP/VJP 调用，不显式构造 Jacobian。共轭梯度（conjugate gradient,
+CG）的内积、步长和共轭系数全部为\cref{eq:real-inner}下的实标量；最大 CG 步数为 8，相对容差为
+$10^{-3}$，阻尼不低于 $10^{-8}$。
+
+完整 CG 步先按 $\operatorname{RMS}(\Delta\bm u_k)\leq
+\tau\operatorname{RMS}(\bm u_k)$ 裁剪，再乘外层 step size。对每个回溯候选，先施加输入投影，然后
+再次检查有效更新仍处于同一 trust ball。模型预测采用与真实测量锚定的增量形式
+\begin{equation}
+  \bm y_{k,\mathrm{pred}}(\Delta\bm u)
+  =\bm y_k+widehat{\mathcal F}_k(\bm u_k+\Delta\bm u)
+  -\widehat{\mathcal F}_k(\bm u_k),
+  \label{eq:anchored}
+\end{equation}
+从而避免把正向模型的静态偏差直接当作测量输出。候选必须有限、满足输入 RMS/峰值/PAPR 限制且
+降低预测损失；否则最多回溯 8 次，每次缩放 0.5。高误差而局部 Jacobian 响应接近零时，可标记
+`saturation\_limited' 并保持小步或零步；算法不会把不可达目标解释为应无限放大输入。
+
+\section{冻结实验协议}
+
+\subsection{波形、seed 与固定迭代预算}
+
+主波形为完全生成的 NR-like OFDM：2048 点 unitary IFFT，DC 两侧各 600 个占用子载波，独立
+单位平均能量 256-QAM，16 个无 CP 周期 symbol，共 $N=32768$ 个样点；每条时域波形归一化到
+单位均方功率。它不包含信道编码、标准资源映射、同步或标准接收机，因此不能称为 3GPP-compliant
+NR。根熵固定为 \texttt{SeedSequence(20260822)}，以稳定名称哈希派生 PA、波形和噪声流。同一 cell
+和 seed 的全部方法共享 PA、波形与基础噪声，统计重复单位为 PA/波形 seed 对，而非样点或 OFDM
+symbol。
+
+外层固定执行 $K=30$ 次更新并保存 $k=0,\ldots,30$ 共 31 次 PA 评估。发现收敛后仍继续运行到
+$k=30$；final 固定指第 30 轮，不选择事后最佳轮。确定性算法失败后保持当前输入，但继续物化剩余
+评估。非有限 PA/捕获输出以固定有限 penalty 编码并标记算法失败与发散，不删除、不缩短且不按算法
+失败重试。
+
+\subsection{PA 机制场景}
+
+高功率 AM/AM 主场景使用平滑 Rapp 映射
+\begin{equation}
+  \mathcal F_{\mathrm{Rapp}}(u)=
+  \frac{u}{\left[1+(|u|/A_{\mathrm{sat}})^{2p}\right]^{1/(2p)}},
+  \quad A_{\mathrm{sat}}=1,\ p=4 .
+  \label{eq:rapp}
+\end{equation}
+目标峰值与饱和值之比扫描 $0.55,0.75,0.90,0.97$。每个实际 seed 都通过解析逆确认可达，并将
+所需输入峰值和安全上限写入 manifest；主要推断单元为 0.97。
+
+低功率 AM/PM 主场景使用 unity AM/AM 与
+\begin{equation}
+  \phi(r)=\phi_{\max}\exp[-(r/r_0)^2],
+  \qquad r_0=0.21,
+  \label{eq:ampm}
+\end{equation}
+目标 RMS 固定为 0.35，$\phi_{\max}$ 扫描 $0^\circ,45^\circ,90^\circ,135^\circ$，主要单元为
+$135^\circ$。低功率相位 RMSE 使用由输入安全峰值固定的 20 个包络分箱，并仅汇总
+bin center $\leq r_0$ 的有效样本；$r_0$ 不随 seed 或迭代改变。
+
+两个压力场景不进入主要优势推断。理想硬限幅场景把目标峰值设为饱和值的 2 倍，明确标记不可达，
+只评价安全停滞、饱和受限与约束行为。gain-rolloff 场景从峰值 2.50 的高输入分支启动，转折点为
+0.70，而目标峰值 0.40 位于低输入可达分支；它用于检验局部 AM/AM slope 为负时单位 Jacobian 的
+局部错误方向。另有带确定性 tap 扰动的 Wiener 输入动态 PA 和 Hammerstein 输出动态 PA，用于
+out-of-family 模型失配评价。
+
+\subsection{方法、矩阵与超参数冻结}
+
+确认扫描和压力研究固定包含七种方法：No DPD、linear ILC、legacy ILC、instantaneous-gain ILC、
+oracle LM、learned raw VJP 与 learned safeguarded LM。Pilot 仅使用两个主要单元和 6 个隔离 seed，
+在四种可调方法各 6 个预注册候选中，依次按“排除安全失败、最小合并 median AUEC、2\% tie 内先
+比较显式计算成本、再按表序”选择。resolved config 绑定 pilot manifest、预期轨迹、records 以及
+code/configuration/environment/protocol/matrix 五类 hashes；确认与次要研究只接受重新验证后的同一
+份配置。Pilot 最终锁定 linear ILC 的 $\mu=0.4$、instantaneous-gain ILC 的 $\mu=0.8$ 与
+$\lambda=10^{-2}$、raw VJP 的 $\mu=0.6$，以及 learned LM 的 step size 1.0、阻尼 $10^{-2}$ 和
+trust-region ratio 0.25。
+
+\begin{table}[t]
+  \centering
+  \caption{冻结实验矩阵。主要推断只来自 confirmatory 的两个预注册主要单元。}
+  \label{tab:matrix}
+  \begin{tabularx}{\linewidth}{lYrr}
+    \toprule
+    Study & 设计摘要 & 方法相关轨迹数 & 推断角色 \\
+    \midrule
+    Smoke & 2 个主要 cell，7 方法，1 seed & 14 & 端到端检查 \\
+    Pilot & 2 cell，4 方法，6 候选，6 seeds & 288 & 锁定超参数 \\
+    Confirmatory & 8 severity cells，7 方法，40 seeds & 2240 & 主要比较与扫描 \\
+    Robustness & 2 cell，4 SNR，2 capture counts，3 方法，20 seeds & 960 & 噪声与平均 \\
+    Mismatch & 2 cell，4 maximum orders，3 depths，12 seeds & 288 & 模型失配 \\
+    Ablation & 2 cell，8 单因素变体，12 seeds & 192 & 机制诊断 \\
+    Dynamic & 2 动态 cell，4 方法，20 seeds & 160 & Out-of-family PA \\
+    Stress & 2 压力 cell，7 方法，12 seeds & 168 & 安全边界 \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{输入安全限制与失败端点}
+
+安全限制按每个实际 cell/seed 物化：最大输入 RMS 为初始 RMS 的 2 倍；最大输入峰值取解析所需峰值
+的 1.15 倍与初始峰值 2 倍中的较大者；最大 PAPR 为初始 PAPR 加 4 dB。投影后超出数值容差的
+候选标记 `constraint\_violation' 和发散并保持当前输入。关闭 trust region 的消融仍保留最终硬
+投影。
+
+收敛定义为 tracking NMSE 不高于 $-35$ dB 并连续保持 3 轮；未收敛轨迹在 $k=30$ 右删失。
+发散定义为非有限数值失败、投影后约束违规，或连续 3 轮 NMSE 相对初始恶化超过 3 dB。成功必须
+同时满足出现收敛事件、无发散、无约束违规且状态为 completed。
+
+\section{指标与统计分析}
+
+\subsection{主要和解释性指标}
+
+Tracking NMSE 定义为
+\begin{equation}
+  \operatorname{NMSE}_k=10\log_{10}
+  \frac{\lVert\bm y_k-\bm d\rVert_2^2}{\lVert\bm d\rVert_2^2}.
+  \label{eq:nmse}
+\end{equation}
+误差收敛面积在功率比域固定计算为
+\begin{equation}
+  \operatorname{AUEC}=\frac{1}{31}\sum_{k=0}^{30}10^{\operatorname{NMSE}_k/10}.
+  \label{eq:auec}
+\end{equation}
+精确零误差在线性域保留为零；有限 dB 汇总使用 $-300$ dB floor 并在导出元数据中声明。主要端点
+还包括固定 $k=30$ 的最终 NMSE、成功率、发散率、约束违规率和算法失败率。
+
+解释性指标包括双边 sampled-band ACLR、基于已知 OFDM grid 的 raw/one-tap equalized EVM、固定
+分箱 AM/AM 与 AM/PM 误差、低功率相位 RMSE、输入 RMS/峰值/PAPR、模型训练/验证 NMSE、秩与条件
+数、CG 迭代与残差、回溯次数和安全状态。合成 PA 还允许记录单位 Jacobian 方向与真实 oracle 梯度
+的余弦、在线模型 VJP 与同一 oracle 的余弦，以及局部负方向样本比例。这些 oracle 指标不适用于
+真实文件服务捕获；sampled-band ACLR 和 known-grid EVM 也不是标准一致性测试。
+
+\subsection{配对推断与预注册判据}
+
+主要比较只在 AM/AM 0.97 与 AM/PM $135^\circ$ 两个 cell 中比较 learned safeguarded LM 与
+linear ILC。每个 cell 使用 40 个完整配对 seed，以 PA seed index 为 cluster 进行 10000 次确定性
+层级 paired percentile bootstrap，并报告 95\% 置信区间。AUEC 使用逐对相对降低量，最终 NMSE
+使用逐对 dB 改善量，二元端点使用配对百分点差。两个 AUEC p 值组成一个 family，以 Holm
+step-down 控制 family-wise $\alpha=0.05$。
+
+每个主要 cell 的可证伪成功标准同时要求：median AUEC 相对降低至少 25\%，median 最终 NMSE 改善
+至少 3 dB，成功率提高至少 20 个百分点，发散率差不超过 $+10$ 个百分点，且约束违规率不增加。
+更具体地，发散率口径固定为
+$\Delta_{\mathrm{div}}=100(\overline I_{\mathrm{div,LM}}-\overline I_{\mathrm{div,linear}})$ 个百分点，
+并以点估计 $\Delta_{\mathrm{div}}\leq+10$ pp 作为非劣门；这是预注册的效果量门槛，不是以置信区间
+上界执行的单独非劣假设检验。约束违规同样使用 model-minus-linear 的配对百分点差，并要求
+$\Delta_{\mathrm{constraint}}\leq0$ pp。
+任何一项未达到都必须照实标记该 cell 未通过；不得更换端点、删除失败 seed、选取最佳迭代或把压力
+场景并入主要推断。ACLR、EVM、分箱、梯度余弦以及全部次要研究仅用于解释机制和边界。
+
+\section{结果}
+\label{sec:results}
+
+\subsection{数据完整性与主要比较}
+
+六个正式分析集均通过 manifest、expected IDs、shard checksums、五类哈希与矩阵重建检查。
+Confirmatory、robustness、mismatch、ablation、dynamic 和 stress 分别包含
+2240、960、288、192、160 和 168 条轨迹，共 4008 条；没有算法失败或分析插补。1106 条未收敛
+轨迹按固定 $k=30$ 右删失并保留。Confirmatory 的 dataset SHA-256 为
+\texttt{09112f15f7281aaa\allowbreak e9adb3acd0ddfcea\allowbreak
+895960d348dbdbad\allowbreak cf57619cd1cb8f78}。
+
+\begin{table}[t]
+  \centering
+  \caption{Learned safeguarded LM 相对 linear ILC 的预注册主要比较。CI 为 10000 次层级配对
+  percentile bootstrap 的 95\% 区间；pp 表示 model-minus-linear 的百分点差。}
+  \label{tab:primary-results}
+  \begin{tabularx}{\linewidth}{lYY}
+    \toprule
+    端点 & AM/AM 0.97 & AM/PM $135^\circ$ \\
+    \midrule
+    Paired median AUEC 相对降低及 95\% CI
+      & 54.00\% [53.46\%, 54.79\%]
+      & 69.01\% [67.70\%, 70.02\%] \\
+    Paired median 最终 NMSE 改善及 95\% CI
+      & 168.02 dB [4.07, 213.05]
+      & 12.42 dB [10.95, 13.98] \\
+    成功率配对百分点差及 95\% CI
+      & 0.0 pp [0.0, 0.0]
+      & 67.5 pp [52.5, 82.5] \\
+    发散率差；$+10$ pp 非劣门
+      & 0.0 pp；通过
+      & 0.0 pp；通过 \\
+    约束违规率差；$0$ pp 门
+      & 0.0 pp；通过
+      & 0.0 pp；通过 \\
+    AUEC Holm 校正
+      & $p_{\mathrm{adj}}=3.9996\times10^{-4}$
+      & $p_{\mathrm{adj}}=3.9996\times10^{-4}$ \\
+    预注册 cell 总判定
+      & \textbf{失败：成功率门未达到}
+      & \textbf{通过} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+AM/AM 的 AUEC 与最终 NMSE 效果均超过预注册阈值，且两个方法均无发散、约束违规或算法失败；但
+linear ILC 与 learned LM 的成功率都为 100\%，改善为 0 pp，因此联合判据失败。其最终 NMSE 区间
+很宽，部分原因是端点接近 $-300$ dB 统计 floor。AM/PM 的五项效果和安全门全部通过。两项 AUEC
+检验的原始 $p$ 值均为 $1.9998\times10^{-4}$，Holm 校正后仍拒绝零效果假设。
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/confirmatory/convergence_main.png}{\linewidth}
+    \caption{两个主要单元的逐轮 NMSE。}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/confirmatory/primary_effects.png}{\linewidth}
+    \caption{配对效果量与 95\% CI。}
+  \end{subfigure}
+  \caption{Confirmatory 的主要结果。所有方法固定运行至 $k=30$，曲线不截断于首次收敛。}
+  \label{fig:primary}
+\end{figure}
+
+\subsection{强基线与严重度扫描}
+
+\cref{tab:endpoints} 给出两个主要单元的关键端点。Instantaneous-gain ILC 不能被视为次要弱基线。
+在 AM/PM $135^\circ$ 中，它的 AUEC、最终 NMSE 和成功率均优于 learned LM；在 AM/AM 0.97 中，
+learned LM 的 AUEC 低 3.9\% 且最终 NMSE 更低，但两者成功率同为 100\%。因此，证据只支持 learned
+LM 相对 linear ILC 的条件性结论，不支持其优于所有公开 ILC 基线。
+
+\begin{table}[t]
+  \centering
+  \caption{两个主要单元的 median 端点。最终 NMSE 使用预注册统计值；精确或极小误差以 $-300$ dB
+  floor 汇总。}
+  \label{tab:endpoints}
+  \begin{tabular}{llrrr}
+    \toprule
+    Cell & 方法 & AUEC & 最终 NMSE/dB & 成功率/\% \\
+    \midrule
+    \multirow{4}{*}{AM/AM 0.97}
+      & Linear ILC & $7.259\times10^{-7}$ & $-86.61$ & 100.0 \\
+      & Instantaneous gain & $4.246\times10^{-7}$ & $-116.61$ & 100.0 \\
+      & Learned LM & $4.080\times10^{-7}$ & $-254.97$ & 100.0 \\
+      & Oracle LM & $4.590\times10^{-7}$ & $-229.09$ & 100.0 \\
+    \midrule
+    \multirow{4}{*}{AM/PM $135^\circ$}
+      & Linear ILC & $1.469\times10^{-2}$ & $-20.76$ & 0.0 \\
+      & Instantaneous gain & $4.018\times10^{-3}$ & $-300.00$ & 100.0 \\
+      & Learned LM & $4.564\times10^{-3}$ & $-33.33$ & 67.5 \\
+      & Oracle LM & $4.080\times10^{-3}$ & $-195.27$ & 100.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+AM/AM 四个严重度下，linear、instantaneous-gain 和 learned LM 的成功率均为 100\%；事实上
+AM/AM 0.97 的 No-DPD 中位最终 NMSE 已为 $-49.83$ dB，低于 $-35$ dB 成功阈值，形成明确的
+成功率天花板。AM/PM 扫描更有区分度：在 $90^\circ$ 时 linear ILC 成功率为 0、learned LM 与
+instantaneous gain 均为 100\%；在 $135^\circ$ 时分别为 0、67.5\% 和 100\%。在 $45^\circ$ 时
+learned LM 的 AUEC 略低于 linear ILC，但最终 NMSE 为 $-65.82$ dB，反而高于 linear ILC 的
+$-111.63$ dB，说明 AUEC 与固定终点并不总给出相同排序。Confirmatory 全部 2240 条轨迹中没有
+发散、约束违规、安全失败或算法失败，1853 条成功，387 条右删失。
+
+\begin{figure}[t]
+  \centering
+  \VerifiedFigure{\AnalysisRoot/confirmatory/endpoint_rates.png}{0.92\linewidth}
+  \caption{Confirmatory 两个主要单元中各方法的成功率与安全端点。}
+  \label{fig:endpoint-rates}
+\end{figure}
+
+\subsection{梯度、低功率相位与模型诊断}
+
+在 AM/AM 0.97 中，learned LM 轨迹内的 learned-gradient cosine 中位数为 0.997，单位 Jacobian
+对应值为 0.987；1200 个 learned-gradient 观测中 9.75\% 为负。在 AM/PM $135^\circ$ 中，情况并非
+“模型梯度更接近 oracle”：learned LM 的两个中位数分别为 $-0.034$ 与 0.365，learned-gradient
+负值比例为 45.75\%；raw VJP 的 learned-gradient 中位数更低至 $-0.583$，负值比例为 86.07\%。
+因此，AM/PM 中相对 linear ILC 的改善不能仅归因于更准确的 VJP 方向，阻尼 normal solve、锚定预测、
+回溯和投影共同参与了实际更新。
+
+固定 $r_0$ 的 AM/PM 低功率相位 RMSE 进一步给出可解释端点：No DPD、linear ILC、raw VJP、learned
+LM、oracle LM 和 instantaneous gain 的中位最终值依次为 $86.79^\circ$、$47.69^\circ$、
+$15.34^\circ$、$7.49^\circ$、$3.96\times10^{-8}$ 度和接近数值零。Learned LM 的 raw EVM 为
+1.67\%，worst-side sampled ACLR 为 40.14 dB；instantaneous gain 的两项都接近数值极限。这再次
+表明逐点、无记忆的 AM/PM 场景与 instantaneous-gain inverse 高度匹配。
+
+在线模型诊断与两个场景的差异一致。AM/AM learned LM 的轨迹均值中位训练/验证 NMSE 为
+$-76.95/-75.15$ dB，秩为 15，条件数为 113.8；AM/PM 对应值仅为 $-17.80/-17.32$ dB，秩同为
+15，条件数为 137.5。AM/AM 的平均 CG 步数和相对残差中位数为 6.38 与 $3.34\times10^{-3}$；
+AM/PM 则达到 8 步上限且残差为 0.138，显示冻结的 8 步预算在强 AM/PM 下经常不能充分求解 normal
+方程。
+
+\begin{figure}[t]
+  \centering
+  \VerifiedFigure{\AnalysisRoot/confirmatory/ampm_fixed_r0_phase.png}{0.94\linewidth}
+  \caption{固定 $r_0=0.21$ 的低功率 AM/PM 相位 RMSE；分箱边界不随 seed 或迭代变化。}
+  \label{fig:low-power-phase}
+\end{figure}
+
+\subsection{稳健性、失配、消融与动态 PA}
+
+\textbf{捕获噪声。} 在 30 dB、单次捕获下，三个方法在两个主要单元的成功率均为 0。十次平均把
+AM/AM 的三个方法都恢复到 100\%，但 AM/PM 中 instantaneous gain、learned LM 和 linear ILC 分别
+只有 100\%、15\% 和 0。40 dB、单次捕获下，AM/AM 三者为 100\%、95\%、100\%（按 instant、LM、
+linear 顺序），AM/PM 为 100\%、35\%、0；50 dB、单次捕获时 AM/PM learned LM 为 85\%，仍低于
+instantaneous gain 的 100\%。在有噪 AM/AM 中，linear ILC 甚至常有更低的 AUEC；例如 30 dB、
+单次捕获下三者的 AUEC 为 $1.646\times10^{-3}$、$1.967\times10^{-3}$ 和
+$1.238\times10^{-3}$。噪声研究使用独立的 20 seeds，不能与 confirmatory 成功率直接合并。
+
+\textbf{模型失配。} AM/AM 的 12 个阶数/记忆组合均达到 100\% 成功，但终点非单调：最大 7 阶的
+最终 NMSE 约为 $-69.44$ dB，而 5 阶和 9 阶可达约 $-284$ 至 $-285$ dB。AM/PM 对模型阶数更敏感：
+最大 3、5、7 阶的全部记忆深度成功率均为 0；9 阶的 depth 1、3、5 分别为 91.7\%、75.0\% 和
+58.3\%。真值为无记忆 PA，因此增加记忆深度没有带来单调收益。
+
+\textbf{消融。} AM/AM 的八个变体仍全部成功，继续受成功率天花板限制。AM/PM 中 raw VJP、
+unanchored prediction 和 legacy dynamic calibration 的成功率均为 0，AUEC 分别为
+$7.926\times10^{-3}$、$1.461\times10^{-2}$ 和 $3.225\times10^{-2}$；frozen-first model、
+three-iteration replay、no trust region、complex64 和 no ridge 的成功率依次为 33.3\%、41.7\%、
+41.7\%、50.0\% 和 58.3\%。全部消融均无发散或约束违规。该排序支持 anchored prediction 与受保护
+normal solve 的数值作用，但不证明每个保护在所有模型和 seed 下都单调改善。
+
+诊断审计发现 three-iteration replay 的一条轨迹在 $k=21,24,27$ 已记录
+\texttt{model\_fallback=true} 与 \texttt{validation\_nmse\_exceeded}，但遗漏
+\texttt{model\_fallback\_strategy} 字符串。数值路径仍按预注册消融定义复用 stale model；该轨迹的
+31 个评价点、端点与冻结判据完整，因此这是非主要推断中的诊断 schema 缺口，而不是数据缺失。
+
+\textbf{动态 PA。} 在 Wiener AM/AM 中，linear、learned LM 和 oracle LM 的成功率均为 100\%，
+instantaneous gain 为 0；learned LM 的 AUEC 为 $5.219\times10^{-4}$，最终 NMSE 为 $-222.46$ dB。
+在 Hammerstein AM/PM 中，oracle LM 为 100\%，learned LM 为 35\%，linear 与 instantaneous gain
+均为 0；learned LM 的最终 NMSE 为 $-28.73$ dB，仍明显落后 oracle 的 $-48.68$ dB。两个动态
+cell 均无发散或约束违规。
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/robustness/variant_endpoints.png}{\linewidth}
+    \caption{SNR 与 capture count。}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/mismatch/variant_endpoints.png}{\linewidth}
+    \caption{模型阶数与记忆深度。}
+  \end{subfigure}
+  \caption{预注册次要研究的 endpoint 汇总。}
+  \label{fig:secondary}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/ablation/variant_endpoints.png}{\linewidth}
+    \caption{八个单因素消融。}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \VerifiedFigure{\AnalysisRoot/dynamic/convergence_study.png}{\linewidth}
+    \caption{Out-of-family 动态 PA。}
+  \end{subfigure}
+  \caption{消融与动态 PA 的描述性结果。}
+  \label{fig:ablation-dynamic}
+\end{figure}
+
+\subsection{独立压力场景与资源}
+
+\textbf{不可达硬饱和。} No DPD、learned LM 和 oracle LM 的中位 AUEC 均为 0.01015，最终 NMSE 均
+为 $-19.93$ dB，成功率为 0。Oracle LM 的 12 条轨迹全部标记 saturation-limited 和 guarded safe
+stop；learned LM 虽同样安全停滞且无发散，却没有触发这两个标志，暴露出 learned-model 饱和检测的
+不足。Instantaneous gain 和 legacy ILC 的发散率均为 100\%；linear、raw VJP、learned LM 与
+oracle LM 均为 0。所有方法的约束违规率仍为 0。
+
+\textbf{Gain rolloff。} No-DPD 轨迹中，局部负方向样本比例中位数为 44.8\%，按内积幅度加权的比例
+为 22.6\%，验证场景确实包含局部反斜率。Oracle LM 达到 100\% 成功与 $-171.50$ dB 最终 NMSE；
+learned LM 只有 8.3\% 成功，最终 NMSE 为 $-28.73$ dB。Linear、instantaneous gain 与 raw VJP
+成功率均为 0，最终 NMSE 分别为 $-6.89$、$-6.90$ 和 $-20.76$ dB。该 cell 没有发散或约束违规，
+说明 learned LM 改善了安全终点，但没有可靠恢复可达低分支。
+
+\begin{figure}[t]
+  \centering
+  \VerifiedFigure{\AnalysisRoot/stress/stress_diagnostics.png}{0.94\linewidth}
+  \caption{两个独立压力场景的安全、饱和和局部负方向诊断。}
+  \label{fig:stress}
+\end{figure}
+
+六个正式 study 均以 6 workers 完成，run summaries 的 elapsed time 合计 30.36 min，基础设施重试为
+0。4008 条轨迹的中位与最大运行时间为 1.507 s 和 11.09 s；确认集中 learned LM 的中位时间为
+4.61 s，约为 linear ILC 的 3.91 倍和 instantaneous gain 的 3.72 倍。跨六个 study 的中位与最大
+峰值 RSS 为 244.3 MiB 和 265.35 MiB。
+
+\section{讨论}
+
+预注册结论是非对称的。AM/PM $135^\circ$ 支持 learned safeguarded LM 相对 linear ILC 的联合
+效果与安全判据；AM/AM 0.97 则明确失败，因为初始误差已跨过成功阈值，No DPD、linear 和 learned
+LM 都出现 100\% 成功率，无法获得要求的 $+20$ pp。即使 AM/AM 的 AUEC 和最终 NMSE 改善很大，也
+不能事后删除成功率门或把该 cell 改判为通过。后续协议若要避免这一 ceiling，应在查看新结果前重新
+定义更严格阈值或提高可达难度，并使用全新 seed；本研究不作这种事后修订。
+
+结果同样不支持“在线模型 backward 普遍比简单 PA 信息更优”的强解释。AM/AM 中模型拟合和梯度
+余弦确实很好；但在 AM/PM 中，在线模型验证 NMSE 只有约 $-17$ dB，learned-gradient 近半为负，
+CG 也常达到步数上限。Learned LM 仍优于 linear ILC，说明受保护 normal solve 能在不完美模型下
+产生实用步，但不能据此断言它恢复了真实梯度。Raw VJP 在 AM/PM 的 0\% 成功率进一步表明，单独
+加入 backward 信息不充分。
+
+Instantaneous-gain ILC 给出了更重要的竞争性解释。冻结的主要 PA 是逐点、无记忆映射，瞬时复增益
+恰好利用了这一结构；它在 AM/PM 主要 cell 和多数噪声条件中明显优于 learned LM，在 AM/AM 中也
+与 learned LM 的 AUEC 接近。因而本文主方法的价值是相对单位-Jacobian linear ILC 的一种受保护
+模型方案，而不是这些合成场景中的最佳通用算法。动态 Wiener AM/AM 使 instantaneous gain 失效，
+同时 learned LM 保持成功，说明带记忆场景会改变排序；Hammerstein AM/PM 中留下的 oracle--learned
+差距则说明当前 MP 拟合仍未充分覆盖动态与低功率相位机制。
+
+压力场景把“安全”与“求解”分开。不可达硬饱和中 learned LM 没有发散，但未像 oracle 一样正确标记
+saturation-limited；gain-rolloff 中它只让 1/12 轨迹出现收敛事件。保护机制因此有效限制了 runaway，
+却没有保证可达目标的分支切换或可靠不可达诊断。所有这些观察都只适用于冻结合成分布。
+
+\section{局限性与有效性威胁}
+
+\begin{enumerate}
+  \item \textbf{仅为仿真机制研究。} PA、捕获噪声和动态 taps 均由代码生成；没有真实器件、测量链、
+        温漂、记忆热效应或闭环时延证据。显式 unity calibration 只是合成原生域选择，不能代替硬件
+        低功率标定。
+  \item \textbf{波形不具有标准合规性。} NR-like OFDM 未实现 CP、编码、标准资源映射、同步和标准
+        接收机；sampled-band ACLR 与 known-grid EVM 只用于同协议内比较，不能推出 3GPP 合规性。
+  \item \textbf{未评价效率与部署。} 本研究没有 DC 功耗、PAE、发射机实时复杂度、量化、DAC/ADC、
+        固定点或在线服务吞吐的硬件测量；输入约束合规也不等价于效率提升。
+  \item \textbf{模型族有限。} 在线模型是有限阶 memory polynomial，不含 GMP 交叉项。动态 PA 研究
+        只能检验协议中两个 out-of-family 结构，不能代表全部宽带 PA、频率相关记忆或非平稳效应。
+  \item \textbf{局部模型与不可达性。} 每轮 LS 只使用当轮轨迹，validation 也来自同一任务分布。
+        Jacobian 在硬饱和处可趋于零，阻尼和保护只能限制更新，不能恢复不存在的物理解。
+  \item \textbf{ILC 前提。} 逐波形学习依赖任务可重复性。本文没有证明如何把学得的单条波形泛化为
+        任意数据流 DPD，也没有与同等预算的全部参数化 DPD 家族作普适优劣比较。
+  \item \textbf{先行工作检索范围。} 当前六篇核心文献足以约束若干宽泛首创表述，但不是数据库级
+        系统综述；投稿前仍需围绕 model-based、Newton、adjoint 和 Jacobian-free ILC 扩展检索。
+  \item \textbf{统计外推。} Bootstrap 重复单位是冻结的合成 PA/波形 seed；区间只描述该生成分布。
+        两个主要 cell 之外的严重度、稳健性、失配、消融和压力结果均为解释性，不接受事后升级为
+        确认性证据。
+  \item \textbf{端点与诊断局限。} AM/AM 的 $-35$ dB 成功阈值在 No-DPD 初始状态即被跨过，导致
+        成功率天花板；dB floor 又会放大极小误差处的终点差解释难度。Learned LM 在不可达硬饱和中
+        安全停滞却未触发 saturation-limited，说明当前诊断标签不能替代独立可达性分析。
+\end{enumerate}
+
+\section{可复现性与产物治理}
+
+协议为每条轨迹生成稳定 ID，并在运行前绑定 code、configuration、environment、protocol 和 matrix
+五类 SHA-256。
+worker 写独立、自校验、原子替换的 JSON shard；checkpoint 元数据绑定压缩数组 checksum。恢复和分析
+必须验证 manifest、完整 expected ID 集、无重复 ID 与所有 checksums，科学源或 resolved config
+变化会终止调度，防止混合不同版本结果。每轮保存主要标量和模型/CG 诊断，只有预注册代表 seed 在
+固定轮次保存波形，其余波形由 seed 与协议重建。失败轨迹保留在统计母体中。
+
+六个正式分析集共享 code、configuration、environment 与 protocol hashes，matrix hash 按 study
+独立冻结。\cref{tab:hashes} 给出可审计前缀，完整 SHA-256 保存在各自
+\texttt{analysis\_summary.json}。所有六个 summary 的 \texttt{completeness\_verified} 均为 true，
+record count 与冻结矩阵完全一致；4008 条记录中算法失败、基础设施重试与分析插补均为 0。Pilot 的
+resolved config 另绑定 pilot 的五类 hashes、manifest/expected IDs 文件哈希和 records hash，并在
+正式研究加载时重算候选选择。
+冻结 manifest 同时记录 base commit \texttt{1115c5b} 与 \texttt{dirty=true}。因此只检出该 commit
+不足以复原冻结运行；正式复核必须以 manifest 内完整 \texttt{code\_hash} 和其余四类哈希为准。
+
+\begin{table}[t]
+  \centering
+  \caption{冻结发布的五类哈希前缀。Code、configuration、environment 和 protocol 在六个正式
+  study 间相同，matrix 按 study 不同。}
+  \label{tab:hashes}
+  \begin{tabular}{ll}
+    \toprule
+    对象 & SHA-256 前缀 \\
+    \midrule
+    Code & \texttt{a8afbb011e46893e} \\
+    Configuration & \texttt{9f5e3bde1a5aecf4} \\
+    Environment & \texttt{76847bb57d61cb28} \\
+    Protocol & \texttt{53e4cabe043d4b34} \\
+    Matrix: confirmatory & \texttt{e45a386fbde808ac} \\
+    Matrix: robustness & \texttt{de8d8a6b627e9093} \\
+    Matrix: mismatch & \texttt{6b4f8a4e491e29aa} \\
+    Matrix: ablation & \texttt{cb860a5b7e9246f2} \\
+    Matrix: dynamic & \texttt{e227d99480d37501} \\
+    Matrix: stress & \texttt{775805e9f01bd469} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{结论}
+
+本文在冻结合成协议下检验了“在线 LS PA 正向模型 + real-linear JVP/VJP + 受保护 matrix-free LM”
+用于逐波形 ILC 的组合。相对 linear ILC，AM/PM $135^\circ$ 单元通过预注册联合判据；AM/AM 0.97
+单元尽管 AUEC 降低 54.00\%、最终 NMSE 配对改善 168.02 dB，仍因成功率改善为 0 pp 而失败。
+该失败来自预注册成功阈值的天花板，不能用其他正向端点覆盖。
+
+机制证据是有限且混合的。AM/AM 中在线模型拟合与 gradient cosine 很好；AM/PM 中 learned gradient
+却经常与 oracle 不一致，raw VJP 也未成功。Learned LM 相对 linear ILC 的改善更适合解释为模型信息、
+阻尼 normal solve、锚定预测、回溯和输入保护的联合结果，而不是“恢复了真实 backward”的单因素证明。
+Instantaneous-gain ILC 在 AM/PM 主 cell 达到 100\% 成功并明显优于 learned LM，在 AM/AM 中也保持
+竞争力，所以本文不主张所提组合优于所有公开基线。
+
+压力研究表明保护可以抑制部分 runaway，但不能恢复不可达目标，也不能保证正确标记饱和或完成局部
+反斜率分支切换。六个正式 study 的 4008 条轨迹均通过五类哈希与完整性验证，失败和右删失轨迹均被
+保留。结论仅适用于生成的 NR-like OFDM 与合成 PA；真实器件、PAE、部署复杂度和标准合规性仍需
+独立实验。
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
