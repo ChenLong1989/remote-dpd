@@ -6,3 +6,4 @@ venv/
 *.egg-info/
 build/
 dist/
+docs/current_plan.md
