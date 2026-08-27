@@ -42,8 +42,24 @@ runs the supported ILC engine and never selects the old MARS/MADE engines.
 * `algorithms.py` defines the extensible engine interface and the ILC engine.
 * `service.py` owns the explicit session state and file-watch protocol.
 
-Future DPD algorithms can implement `DPDEngine.process(...)` and register a
-new engine name without changing the file protocol or watcher.
+The existing file watcher can still be extended programmatically through
+`DPDEngine.process(...)`. New device-controlled development uses the versioned
+`DPDRuntime` contract below; the legacy engine interface will leave with the
+legacy watcher in a later refactoring stage.
+
+The first refactoring stage also provides device-independent contracts that
+are not yet wired into the file-watch entry point:
+
+* `device.py` defines typed RF device capabilities and adapter schemas.
+* `preprocessing.py` aligns and coherently averages capture batches while
+  keeping the first-round gain correction fixed.
+* `runtime.py` defines the versioned DPD runtime contract and basic ILC.
+* `safety.py` enforces the fixed digital peak and RMS limits without AGC,
+  scaling, or clipping.
+
+See [`docs/README.md`](docs/README.md) for the current design and refactoring
+status. Simulation, orchestration, the new file protocol, and the web console
+are intentionally deferred to later stages.
 
 ## Important compatibility note
 

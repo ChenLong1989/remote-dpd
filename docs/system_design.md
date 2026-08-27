@@ -2,6 +2,52 @@
 
 本文档描述当前仓库中 `remote-dpd` 的实际实现。代码是行为的最终依据；本文不会把预留接口、兼容字段或 README 中的概括表述当成已实现能力。
 
+## [AGENT] 已批准的重构目标（分阶段实施中）
+
+> 本节是已经用户批准、但尚未全部实现的目标设计。下文其余章节描述每个已合入阶段之后的实际行为；未实现能力会继续明确标为后续阶段。详细用户意图、执行顺序、验证方式和风险见本地 `docs/current_plan.md`。
+
+拟将系统重构为设备、预处理、算法 runtime、应用控制、入口和存储六层：
+
+```mermaid
+flowchart LR
+    Web[本机网页与 REST/SSE] --> Commands[串行命令队列]
+    File[新 MAT 文件命令入口] --> Commands
+    Commands --> Controller[ClosedLoopController]
+    Controller --> Safety[功率控制与数字安全]
+    Controller --> Bench[RFBench]
+    Bench --> Tx[Transmitter]
+    Bench --> Rx[Receiver]
+    Bench --> Power[PowerSensor]
+    Rx --> Capture[CaptureBatch]
+    Capture --> Preprocess[反馈预处理]
+    Preprocess --> Runtime[DPDRuntime]
+    Runtime --> Safety
+    Controller --> Store[临时记录与最终 MAT]
+    Sim[SimulatedRFBench] -.实现相同契约.-> Bench
+```
+
+核心边界如下：
+
+- `RFBench` 按发射、接收和功率测量能力组合设备。一体式仪器可实现多项能力，分立仪表可组合；首期只实现仿真设备。
+- 预处理负责反馈分段、周期小数时延和相位对齐、相干平均以及首轮固定幅度增益校正。每轮都以原始参考 `x` 对齐时延和相位，但幅度校正值只在第 0 轮估计一次。
+- `DPDRuntime` 不接触设备、原始抓取、网页或 MAT 文件。首期基础 ILC 使用 `y_next = y_current - mu * (z_current - x)`，后续通过注册表增加 ILC 变体；具体外部 runtime 加载器延后到真实产物形态确定后实现。
+- `ClosedLoopController` 是唯一闭环编排者，使用单任务状态机。网页和文件入口只能提交命令，不得复制设备或算法调用链。
+- `x` 是原始周期参考波形，`y` 是已经实际发射并评价的最终数字 DPD 波形，`z` 是对应的最终预处理反馈。
+
+第 0 轮发射 `x`，从较大 TX 衰减开始调节功率。目标从下方逼近：差值大于 `1 dB` 时按 `1 dB` 调节，其余未进入 `0.2 dB` 容差的情况按 `0.1 dB` 调节。超过目标时恢复上一个安全衰减并失败。成功后锁定衰减，后续每轮只在抓反馈前读取物理功率并检查独立安全上限，不再自动调节。
+
+每个候选发射波形在设备调用前执行数字安全检查：所有样点有限、峰值不超过 `0 dBFS`、RMS 不超过原始 `x` 的 RMS `+2 dB`。系统禁止 AGC、自动归一化和静默削峰；失败时不得下发并必须停止任务。
+
+仿真设备使用周期复系数记忆多项式 PA，并模拟固定增益、相位、小数时延、复高斯噪声、TX 衰减、功率测量和单次最大抓取长度。网页允许用表格逐项编辑全部 PA 系数。
+
+网页默认只监听 loopback，不提供鉴权、多用户或并行任务。它同时提供分步控制和自动闭环，并通过设备 schema 动态生成专属配置。服务端仅允许在配置的 waveform root 内选择变量名为 `x` 的 MAT 波形。
+
+可选文件入口采用新的版本化 inbox/outbox MAT 命令协议，通过 `command_id` 幂等地驱动同一个控制器；不兼容现有 `Config_file.mat`、`DPD_in.mat`、`FB_Signal.mat`、ACK、心跳、`safeBack` 或特殊十段输出规则。
+
+每次运行的完整迭代数据保存在自动清理的临时目录，默认保留 7 天。用户显式导出的正式 MAT 只包含最终 `x`、`y`、`z`、最终指标、生效配置、状态和完成时间，不包含迭代历史。
+
+整体重构按四个顺序 PR 完成：核心契约/预处理/基础 ILC，仿真设备/功率控制/闭环状态机，临时存储/正式导出/新文件入口，最后是网页控制台。每一阶段都从当时最新 `origin/main` 创建分支，经 review 合入并清理分支后才开始下一阶段。阶段 1 已进入实现，其余阶段仍不是当前代码能力。
+
 ## 1. 系统定位
 
 `remote-dpd` 是一个常驻的 Python 文件监听服务，用于替代旧的 MATLAB Remote DPD 服务。外部设备或上游程序通过共享目录交换 MAT 文件，服务在内存中维护一次 DPD 会话的迭代状态，并使用 ILC（Iterative Learning Control，迭代学习控制）生成下一轮发射波形。
@@ -83,6 +129,10 @@ flowchart LR
 | `remote_dpd/metrics.py` | 基于波形的 OFDM symbol EVM 估算 | 不是完整的 5G NR 解调器 |
 | `remote_dpd/state.py` | 显式会话状态和波形 SHA-256 指纹 | 取代旧 MATLAB base workspace 状态 |
 | `remote_dpd/exceptions.py` | 协议和算法异常类型 | `UnsupportedAlgorithm` 当前未被引擎工厂使用 |
+| `remote_dpd/device.py` | 新设备公共配置、动态参数 schema 和 RF 能力抽象 | 阶段 1 已实现契约，尚无具体设备且未接入旧服务 |
+| `remote_dpd/preprocessing.py` | 新反馈批次、时延/相位对齐、相干平均和固定增益校正 | 阶段 1 已实现，尚未接入旧服务 |
+| `remote_dpd/runtime.py` | 版本化 DPD runtime、基础 ILC 和进程内注册表 | 与仍被旧服务使用的 `algorithms.py` 并存 |
+| `remote_dpd/safety.py` | TX 前的非修改式数字峰值和 RMS 安全检查 | 阶段 1 已实现，控制器接入留待后续阶段 |
 
 ### 3.2 核心对象关系
 
@@ -92,6 +142,14 @@ flowchart LR
 - `engine` 由该配置转换成 `ILCConfig` 后创建。每次配置文件到达都会重建引擎。
 - `state` 在服务实例生命周期内复用，配置重建引擎时不会自动重置。
 - `RLock` 保护配置替换、输入状态变更和单次 ILC 状态提交，但 MAT 读取、部分前置读取及输出文件写入不在同一个锁事务内。
+
+### 3.3 阶段 1 新核心的共存边界
+
+设备直控重构的阶段 1 只建立了可独立测试的新核心契约。默认 CLI 和 `RemoteDPDService` 尚未调用这些模块，因此当前部署行为和旧文件协议没有在本阶段改变。
+
+新链路的固定数据语义是：`x` 为原始参考，`y_current` 为已经实际发送的当前数字波形，`CaptureBatch` 为原始反馈批次，预处理结果 `z` 为对齐、平均并应用首轮固定幅度校正后的反馈，runtime 再生成 `y_candidate`。候选必须通过独立数字安全检查后才能在后续控制器中下发。
+
+详细契约分别见 `docs/device_design.md`、`docs/preprocessing_design.md` 和 `docs/algorithm_runtime_design.md`。
 
 ## 4. 服务生命周期与并发模型
 
@@ -439,9 +497,15 @@ RemoteDPDError
 
 文件协议与算法边界已经通过 `protocol.py`、`config.py` 和 `DPDEngine` 分层。新增 MAT 别名应放在协议或配置层，新增纯数值算法不应直接读写文件。
 
+### 11.1 新 DPD runtime 契约
+
+阶段 1 新增的 `DPDRuntime` 是后续设备直控链路使用的替代边界，不改变当前 `DPDEngine` 行为。它使用 API 版本、显式生命周期、不可变 `RuntimeStepInput`/`RuntimeStepResult` 以及独立注册表，消除了旧接口对 `ILCConfig`、`SessionState` 和 `ILCResult` 的固定依赖。
+
+当前只注册 `basic_ilc`，其公式为 `y_candidate = y_current - mu * (z_current - x)`。预处理和数字安全分别位于 runtime 前后，不允许 runtime 隐式对输入或输出做对齐、归一化、AGC 或削峰。新控制器接入后，旧 `DPDEngine` 才会随旧文件服务一起退出。
+
 ## 12. 测试现状
 
-仓库使用 Python `unittest`，当前测试覆盖：
+仓库使用 Python `unittest`，阶段 1 后测试覆盖：
 
 - 整数延迟及复增益的波形对齐。
 - 十捕获反馈的识别和平均结果长度。
@@ -449,8 +513,12 @@ RemoteDPDError
 - MAT struct 的保存和加载回环。
 - 配置、DPD 输入、反馈、DPD 输出和 EVM 的同步端到端文件交换。
 - 完全相同反馈的幂等去重和迭代号不推进。
+- 设备公共配置、动态 schema、抓取请求以及一体式多能力设备的类型契约。
+- coherent 单批对齐复用、非 coherent 逐段对齐、多批独立对齐、相干平均降噪和首轮固定增益。
+- DPD runtime 生命周期、配置一致性、基础 ILC、注册表、状态隔离和不可变输入输出。
+- `0 dBFS` 峰值、相对参考 RMS `+2 dB`、非有限值、长度错误和零参考等数字安全边界。
 
-当前没有直接覆盖：watchdog 真实事件和稳定等待、心跳、`safeBack`、配置字段全部别名、reset ACK 的变量名差异、v7.3/h5py、采样率变化、327680 特殊路径、相位补偿、两个 Torch FIR、CUDA、输出失败后的状态一致性及 symbol EVM 的长捕获路径。
+当前没有直接覆盖：watchdog 真实事件和稳定等待、心跳、`safeBack`、配置字段全部别名、reset ACK 的变量名差异、v7.3/h5py、采样率变化、327680 特殊路径、相位补偿、两个 Torch FIR、CUDA、输出失败后的状态一致性及 symbol EVM 的长捕获路径。新契约尚无具体设备、功率控制器、仿真 PA、闭环状态机、存储、文件入口或网页测试，这些属于后续阶段。
 
 标准验证命令为：
 
