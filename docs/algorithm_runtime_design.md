@@ -1,6 +1,6 @@
 # DPD Runtime 与数字安全设计
 
-本文描述 `remote_dpd/runtime.py` 和 `remote_dpd/safety.py` 当前实现。新 runtime 契约尚未接入现有文件监听服务；旧服务仍调用 `remote_dpd/algorithms.py` 的旧引擎接口。
+本文描述 `remote_dpd/runtime.py` 和 `remote_dpd/safety.py` 当前实现。新 runtime 契约已经接入 `ClosedLoopController` 的仿真闭环，但尚未接入现有文件监听服务；旧服务仍调用 `remote_dpd/algorithms.py` 的旧引擎接口。
 
 ## 1. Runtime 契约
 

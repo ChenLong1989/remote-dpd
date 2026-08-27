@@ -47,8 +47,8 @@ The existing file watcher can still be extended programmatically through
 `DPDRuntime` contract below; the legacy engine interface will leave with the
 legacy watcher in a later refactoring stage.
 
-The first refactoring stage also provides device-independent contracts that
-are not yet wired into the file-watch entry point:
+The first two refactoring stages also provide a complete programmatic
+simulation loop that is not yet wired into the file-watch entry point:
 
 * `device.py` defines typed RF device capabilities and adapter schemas.
 * `preprocessing.py` aligns and coherently averages capture batches while
@@ -56,10 +56,13 @@ are not yet wired into the file-watch entry point:
 * `runtime.py` defines the versioned DPD runtime contract and basic ILC.
 * `safety.py` enforces the fixed digital peak and RMS limits without AGC,
   scaling, or clipping.
+* `simulation.py` implements the integrated simulated RF bench and memory PA.
+* `power_control.py` implements initial attenuation tuning and later monitoring.
+* `controller.py` provides the single-task manual and automatic state machine.
 
 See [`docs/README.md`](docs/README.md) for the current design and refactoring
-status. Simulation, orchestration, the new file protocol, and the web console
-are intentionally deferred to later stages.
+status. Persistent run storage, the new file protocol, and the web console are
+intentionally deferred to later stages.
 
 ## Important compatibility note
 

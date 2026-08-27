@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from numbers import Integral, Real
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -639,3 +641,76 @@ class RFBench(ABC):
     @abstractmethod
     def disconnect(self, timeout_seconds: float) -> None:
         """Release all unique underlying instrument connections."""
+
+
+class DeviceRegistrationError(RuntimeError):
+    """An RF bench factory cannot be registered or resolved."""
+
+
+RFBenchFactory = Callable[[], RFBench]
+_DEVICE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+_RF_BENCH_REGISTRY_LOCK = RLock()
+
+
+def _create_simulated_bench() -> RFBench:
+    from .simulation import SimulatedRFBench
+
+    return SimulatedRFBench()
+
+
+_RF_BENCH_FACTORIES: dict[str, RFBenchFactory] = {
+    "simulated": _create_simulated_bench,
+}
+
+
+def register_rf_bench(
+    name: str,
+    factory: RFBenchFactory,
+    *,
+    replace: bool = False,
+) -> None:
+    """Register a no-argument RF bench factory under a normalized name."""
+    normalized = _normalize_device_name(name)
+    if not callable(factory):
+        raise TypeError("factory must be callable")
+    with _RF_BENCH_REGISTRY_LOCK:
+        if normalized in _RF_BENCH_FACTORIES and not replace:
+            raise DeviceRegistrationError(
+                f"RF bench factory {normalized!r} is already registered"
+            )
+        _RF_BENCH_FACTORIES[normalized] = factory
+
+
+def create_rf_bench(name: str) -> RFBench:
+    """Create a fresh RF bench instance by registered name."""
+    normalized = _normalize_device_name(name)
+    with _RF_BENCH_REGISTRY_LOCK:
+        factory = _RF_BENCH_FACTORIES.get(normalized)
+    if factory is None:
+        raise DeviceRegistrationError(
+            f"unknown RF bench {normalized!r}; available: {list_rf_benches()}"
+        )
+    bench = factory()
+    if not isinstance(bench, RFBench):
+        raise DeviceRegistrationError(
+            f"RF bench factory {normalized!r} did not create an RFBench"
+        )
+    return bench
+
+
+def list_rf_benches() -> tuple[str, ...]:
+    """Return registered RF bench names in deterministic order."""
+    with _RF_BENCH_REGISTRY_LOCK:
+        return tuple(sorted(_RF_BENCH_FACTORIES))
+
+
+def _normalize_device_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise TypeError("RF bench name must be a string")
+    normalized = name.strip().lower()
+    if not _DEVICE_NAME_PATTERN.fullmatch(normalized):
+        raise DeviceRegistrationError(
+            "RF bench name must start with a letter and contain only lowercase "
+            "letters, digits, underscores, or hyphens"
+        )
+    return normalized

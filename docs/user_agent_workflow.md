@@ -120,6 +120,8 @@ PR 合入后，Agent 负责收尾：
 | `docs/device_design.md` | 设备公共配置、动态参数 schema 和发射/接收/功率能力契约 | 模块级 |
 | `docs/preprocessing_design.md` | 反馈批次、时延/相位对齐、相干平均和固定增益校正 | 模块级 |
 | `docs/algorithm_runtime_design.md` | DPD runtime 生命周期、基础 ILC、注册表和数字安全边界 | 模块级 |
+| `docs/simulation_design.md` | 仿真 RF bench、有记忆 PA、反馈抓取和功率测量模型 | 模块级 |
+| `docs/controller_design.md` | 初始功率调节、闭环状态机、迭代记录、停止和安全收尾 | 模块级 |
 
 > 后续阶段新增模块时，按同样约定新建模块设计文档（如 `deploy_design.md`），并在本表登记。
 > 跨模块边界的改动需同步更新 `system_design.md`。
