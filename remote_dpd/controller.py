@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from threading import Event, Lock, RLock
 from types import MappingProxyType
@@ -179,6 +180,8 @@ class ControllerSnapshot:
     locked_attenuation_db: float | None
     latest_power_dbm: float | None
     config: ClosedLoopConfig | None
+    device_type: str
+    completed_at: str | None
     reference_safety: DigitalSafetyReport | None = None
     x: np.ndarray | None = field(default=None, repr=False)
     records: tuple[IterationRecord, ...] = ()
@@ -260,6 +263,7 @@ class ClosedLoopController:
         self._records: list[IterationRecord] = []
         self._tx_iteration: int | None = None
         self._last_error: ControllerErrorInfo | None = None
+        self._completed_at: str | None = None
 
     @property
     def bench(self) -> RFBench:
@@ -566,6 +570,8 @@ class ClosedLoopController:
                 ),
                 latest_power_dbm=(self._latest_power_dbm),
                 config=self._config,
+                device_type=self._bench.parameter_schema.device_type,
+                completed_at=self._completed_at,
                 reference_safety=self._reference_safety,
                 x=self._x,
                 records=tuple(self._records),
@@ -748,7 +754,7 @@ class ClosedLoopController:
             self._check_stop()
             self._close_runtime_or_raise()
             self._check_stop()
-            self._state = ControllerState.COMPLETED
+            self._set_terminal_state(ControllerState.COMPLETED)
         else:
             self._state = ControllerState.CALIBRATED
         return record
@@ -828,16 +834,16 @@ class ClosedLoopController:
         if shutdown_error is not None:
             error = RuntimeError(shutdown_error)
             self._record_failure(operation, error, shutdown_error=shutdown_error)
-            self._state = ControllerState.FAILED
+            self._set_terminal_state(ControllerState.FAILED)
             return
         self._last_error = None
-        self._state = ControllerState.STOPPED
+        self._set_terminal_state(ControllerState.STOPPED)
 
     def _finish_failed(self, operation: str, exc: Exception) -> None:
         self._retain_power_trace(exc)
         shutdown_error = self._cleanup_after_terminal()
         self._record_failure(operation, exc, shutdown_error=shutdown_error)
-        self._state = ControllerState.FAILED
+        self._set_terminal_state(ControllerState.FAILED)
 
     def _retain_power_trace(self, exc: Exception) -> None:
         measured_power_dbm = getattr(exc, "measured_power_dbm", None)
@@ -897,6 +903,17 @@ class ClosedLoopController:
         self._gain_correction = None
         self._records = []
         self._tx_iteration = None
+        self._completed_at = None
+
+    def _set_terminal_state(self, state: ControllerState) -> None:
+        if state not in {
+            ControllerState.COMPLETED,
+            ControllerState.STOPPED,
+            ControllerState.FAILED,
+        }:
+            raise ValueError("state must be terminal")
+        self._state = state
+        self._completed_at = _utc_timestamp()
 
     def _reinitialize_runtime_or_raise(self) -> None:
         if self._config is None:
@@ -933,6 +950,7 @@ class ClosedLoopController:
             if self._connected and self._configured and self._x is not None
             else ControllerState.IDLE
         )
+        self._completed_at = None
 
     def _require_ready_components(self) -> tuple[ClosedLoopConfig, np.ndarray]:
         if not self._connected or not self._configured or self._config is None:
@@ -1116,3 +1134,11 @@ def _json_config_value(value: object) -> Any:
 def _exception_code(name: str) -> str:
     words = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
     return words.removesuffix("_error") or "controller_error"
+
+
+def _utc_timestamp() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )

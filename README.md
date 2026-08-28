@@ -1,72 +1,91 @@
 # remote-dpd
 
-`remote-dpd` is the MATLAB-free replacement for the remote DPD file-watch
-service. It keeps the existing `.mat` exchange contract and currently exposes
-one algorithm: iterative learning control (ILC) DPD. The numerical core uses
-NumPy/SciPy and PyTorch tensors; no MATLAB Engine, MATLAB Runtime, or MATLAB
-license is required.
+`remote-dpd` 是一个不依赖 MATLAB 的设备直控 ILC DPD 闭环服务。当前版本提供：
 
-## Run
+- 可扩展的发射、接收、功率测量和组合式 `RFBench` 契约；
+- 带有记忆多项式 PA、TX 衰减、反馈扰动和功率测量的确定性仿真设备；
+- 独立反馈预处理、基础 ILC runtime、数字波形安全和物理功率安全；
+- 分步或自动的单任务闭环控制器；
+- 自动清理的完整临时运行记录和最终 MAT 正式结果；
+- 版本化 inbox/outbox MAT 文件命令入口。
 
-Install the project in a Python environment with PyTorch. On CPU-only
-deployment hosts, use the supplied requirements file so pip does not pull
-CUDA runtime packages:
+当前唯一内置设备是 `simulated`。真实仪器适配器可通过相同设备注册表逐个增加。网页控制台属于下一阶段，尚未实现。
+
+## 安装与启动
+
+项目要求 Python 3.10 或更高版本：
 
 ```bash
-python -m pip install -r requirements-cpu.txt
-python -m pip install -e . --no-deps
-remote-dpd Zilink --watch-root /opt/SharePoint
+python -m pip install -e .
+remote-dpd --exchange-root /opt/remote-dpd/exchange
 ```
 
-The service watches `/opt/SharePoint/<SUPPLIER_NAME>` by default. A custom
-directory can be supplied with `--path`; this is useful for a staging folder.
-The process is intentionally resident until interrupted.
+默认临时运行数据位于 `<exchange-root>/runtime`，保留 7 天并每 24 小时清理一次。可以显式覆盖：
 
-## Exchange contract
+```bash
+remote-dpd \
+  --exchange-root /opt/remote-dpd/exchange \
+  --runtime-root /var/lib/remote-dpd \
+  --retention-days 7 \
+  --cleanup-interval-seconds 86400
+```
 
-The service accepts the existing files `Config_file.mat`, `DPD_in.mat`, and
-`FB_Signal.mat` and writes `Config_file_ack.mat`, `ACK_DPDin.mat`,
-`DPDout_Nokia.mat`, `symbolEVM.mat`, and the periodic `sync_dat.txt` heartbeat.
-MAT v5/v6 files are handled with `scipy.io`; MATLAB v7.3/HDF5 files are
-accepted when `h5py` is installed.
+使用 `--once` 可同步扫描当前 inbox 后退出，适合测试和批处理：
 
-The legacy `configDPD` struct is accepted. Its `run_idealDPD`, `enILC`, and
-`idealDPD` flags are treated as compatibility metadata: this service always
-runs the supported ILC engine and never selects the old MARS/MADE engines.
+```bash
+remote-dpd --exchange-root /tmp/remote-dpd-exchange --once
+```
 
-## Architecture
+## 文件命令入口
 
-* `protocol.py` contains the file names and MAT conversion at the boundary.
-* `config.py` converts legacy MATLAB structs to a typed ILC configuration.
-* `dsp.py` contains alignment, circular FIR, optional resampling, and metrics.
-* `algorithms.py` defines the extensible engine interface and the ILC engine.
-* `service.py` owns the explicit session state and file-watch protocol.
+服务使用以下目录：
 
-The existing file watcher can still be extended programmatically through
-`DPDEngine.process(...)`. New device-controlled development uses the versioned
-`DPDRuntime` contract below; the legacy engine interface will leave with the
-legacy watcher in a later refactoring stage.
+```text
+<exchange-root>/
+├── inbox/
+│   └── command_<command_id>.mat
+├── outbox/
+│   ├── status_<command_id>.mat
+│   └── result_<command_id>.mat
+└── runtime/
+    └── runs/<run_id>/
+```
 
-The first two refactoring stages also provide a complete programmatic
-simulation loop that is not yet wired into the file-watch entry point:
+命令文件公共变量为：
 
-* `device.py` defines typed RF device capabilities and adapter schemas.
-* `preprocessing.py` aligns and coherently averages capture batches while
-  keeping the first-round gain correction fixed.
-* `runtime.py` defines the versioned DPD runtime contract and basic ILC.
-* `safety.py` enforces the fixed digital peak and RMS limits without AGC,
-  scaling, or clipping.
-* `simulation.py` implements the integrated simulated RF bench and memory PA.
-* `power_control.py` implements initial attenuation tuning and later monitoring.
-* `controller.py` provides the single-task manual and automatic state machine.
+- `schema_version=1`；
+- `command_id`，必须与文件名一致；
+- `action`；
+- 按动作可选的参考波形 `x` 和严格 JSON 字符串 `config_json`。
 
-See [`docs/README.md`](docs/README.md) for the current design and refactoring
-status. Persistent run storage, the new file protocol, and the web console are
-intentionally deferred to later stages.
+支持动作：`load`、`configure`、`power_tune`、`calibrate`、`step`、`run`、`stop`、`reset` 和 `export`。`run` 可同时携带 `x` 与完整配置完成自动闭环。
 
-## Important compatibility note
+生产者必须先写临时文件，再原子重命名为 `command_<command_id>.mat`。`command_id` 是持久幂等键；已有状态、同 ID 临时 run 或正式结果的命令不会重复执行硬件动作。已完成但尚未交付完毕的结果可从校验后的 run 缓存补写到 outbox。完整契约见 [`docs/file_interface_design.md`](docs/file_interface_design.md)。
 
-The old MATLAB implementation stores state in the MATLAB base workspace. The
-Python implementation stores it explicitly in `SessionState`, which is reset
-by `Config_file.Reset` or when a new `DPD_in` waveform arrives. This makes
-restart and testing deterministic while preserving the observable file API.
+本接口不兼容旧 `Config_file.mat`、`DPD_in.mat`、`FB_Signal.mat`、ACK、心跳或 `safeBack` 协议。
+
+## 最终结果
+
+成功的 `run` 或显式 `export` 生成不含迭代历史的正式 MAT：
+
+- `x`：原始参考波形；
+- `y`：最终实际发射并评价的 DPD 波形；
+- `z`：对应的最终预处理反馈；
+- `metrics`：最终 NMSE、数字功率、物理功率、衰减、固定增益和抓取计数；
+- `config`：可由 MATLAB `jsondecode` 解析的实际生效配置；
+- `status`、`schema_version` 和 `completed_at`。
+
+完整迭代只保存在临时运行目录，正式结果不会包含历史波形。
+
+## 核心模块
+
+- `device.py`：设备能力、公共配置、动态 schema 和设备注册表。
+- `simulation.py`：仿真 RF bench 和周期有记忆 PA。
+- `preprocessing.py`：时延/相位对齐、相干平均和首轮固定幅度增益。
+- `runtime.py`：版本化 DPD runtime 和基础 ILC。
+- `safety.py` / `power_control.py`：数字与物理功率安全。
+- `controller.py`：分步/自动闭环、状态机、停止和安全收尾。
+- `storage.py` / `result_export.py`：临时记录、清理和最终 MAT。
+- `file_interface.py`：新 MAT 命令服务。
+
+文档入口见 [`docs/README.md`](docs/README.md)。
