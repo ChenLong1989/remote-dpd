@@ -46,7 +46,7 @@ flowchart LR
 
 每次运行的完整迭代数据保存在自动清理的临时目录，默认保留 7 天。用户显式导出的正式 MAT 只包含最终 `x`、`y`、`z`、最终指标、生效配置、状态和完成时间，不包含迭代历史。
 
-整体重构按四个顺序 PR 完成：核心契约/预处理/基础 ILC，仿真设备/功率控制/闭环状态机，临时存储/正式导出/新文件入口，最后是网页控制台。每一阶段都从当时最新 `origin/main` 创建分支，经 review 合入并清理分支后才开始下一阶段。阶段 1 已进入实现，其余阶段仍不是当前代码能力。
+整体重构按四个顺序 PR 完成：核心契约/预处理/基础 ILC，仿真设备/功率控制/闭环状态机，临时存储/正式导出/新文件入口，最后是网页控制台。每一阶段都从当时最新 `origin/main` 创建分支，经 review 合入并清理分支后才开始下一阶段。阶段 1 已合入，阶段 2 已实现并等待 review；阶段 3 和阶段 4 仍不是当前代码能力。
 
 ## 1. 系统定位
 
@@ -129,10 +129,13 @@ flowchart LR
 | `remote_dpd/metrics.py` | 基于波形的 OFDM symbol EVM 估算 | 不是完整的 5G NR 解调器 |
 | `remote_dpd/state.py` | 显式会话状态和波形 SHA-256 指纹 | 取代旧 MATLAB base workspace 状态 |
 | `remote_dpd/exceptions.py` | 协议和算法异常类型 | `UnsupportedAlgorithm` 当前未被引擎工厂使用 |
-| `remote_dpd/device.py` | 新设备公共配置、动态参数 schema 和 RF 能力抽象 | 阶段 1 已实现契约，尚无具体设备且未接入旧服务 |
+| `remote_dpd/device.py` | 新设备公共配置、动态参数 schema、RF 能力抽象和设备 factory 注册表 | 内置注册名当前只有 `simulated`，未接入旧服务 |
 | `remote_dpd/preprocessing.py` | 新反馈批次、时延/相位对齐、相干平均和固定增益校正 | 阶段 1 已实现，尚未接入旧服务 |
 | `remote_dpd/runtime.py` | 版本化 DPD runtime、基础 ILC 和进程内注册表 | 与仍被旧服务使用的 `algorithms.py` 并存 |
-| `remote_dpd/safety.py` | TX 前的非修改式数字峰值和 RMS 安全检查 | 阶段 1 已实现，控制器接入留待后续阶段 |
+| `remote_dpd/safety.py` | TX 前的非修改式数字峰值和 RMS 安全检查 | 阶段 2 控制器已在每次设备下发前调用 |
+| `remote_dpd/simulation.py` | 集成式仿真 RF bench、有记忆 PA、反馈扰动和功率测量 | 阶段 2 首个具体设备实现 |
+| `remote_dpd/power_control.py` | 初始衰减调节、调节轨迹和后续物理功率监控 | 不负责设备终态，由控制器统一收尾 |
+| `remote_dpd/controller.py` | 分步/自动闭环、单任务状态机、迭代提交、停止和安全收尾 | 新 Python API，尚未接入默认 CLI 或文件入口 |
 
 ### 3.2 核心对象关系
 
@@ -150,6 +153,16 @@ flowchart LR
 新链路的固定数据语义是：`x` 为原始参考，`y_current` 为已经实际发送的当前数字波形，`CaptureBatch` 为原始反馈批次，预处理结果 `z` 为对齐、平均并应用首轮固定幅度校正后的反馈，runtime 再生成 `y_candidate`。候选必须通过独立数字安全检查后才能在后续控制器中下发。
 
 详细契约分别见 `docs/device_design.md`、`docs/preprocessing_design.md` 和 `docs/algorithm_runtime_design.md`。
+
+### 3.4 阶段 2 仿真闭环
+
+阶段 2 将阶段 1 新核心接入 `ClosedLoopController`，并以 `SimulatedRFBench` 完成设备无关的完整闭环。调用方可以通过 Python API 分步执行连接、配置、加载 `x`、发送、功率调节、校准和单步 ILC，也可以从已满足部分前置条件的状态调用 `run_auto()`。
+
+每轮候选先经过数字安全检查，再按 `stop → upload → start → 物理功率监控 → 抓取 → 预处理 → 提交` 执行。第 0 轮额外完成一次从较大衰减向目标逼近的功率调节并固定衰减和幅度 gain。正常完成、人工停止和任何错误都会安全停止 RF；一个控制器实例只允许一项修改操作。
+
+控制器会用设备 schema 补齐专属默认项，并在 snapshot 中保存实际生效配置。`ClosedLoopConfig.to_dict()` 生成严格 JSON 结构；复数和 NumPy array 使用带 `$type` 的显式表示，供后续文件/API 层消费。
+
+当前默认 CLI 仍创建旧 `RemoteDPDService`，不会启动新控制器。详细行为见 `docs/simulation_design.md` 和 `docs/controller_design.md`。
 
 ## 4. 服务生命周期与并发模型
 
@@ -517,8 +530,12 @@ RemoteDPDError
 - coherent 单批对齐复用、非 coherent 逐段对齐、多批独立对齐、相干平均降噪和首轮固定增益。
 - DPD runtime 生命周期、配置一致性、基础 ILC、注册表、状态隔离和不可变输入输出。
 - `0 dBFS` 峰值、相对参考 RMS `+2 dB`、非有限值、长度错误和零参考等数字安全边界。
+- 仿真设备 schema、生命周期、周期有记忆 PA、衰减、功率标定、扰动、固定随机种子和抓取限制。
+- `1 dB`/`0.1 dB` 功率调节、`0.2 dB` 浮点边界、越界回退、绝对安全监控及非法功率 fail-closed。
+- 分步/自动闭环一致性、完整段拆批、每轮功率监控、候选拒绝、配置失效、人工停止并发窗口、runtime 关闭失败和统一安全收尾。
+- 使用真实 `SimulatedRFBench` 的端到端闭环：完成五次实际发送/评价、拆分多批抓取，并相对第 0 轮改善 NMSE。
 
-当前没有直接覆盖：watchdog 真实事件和稳定等待、心跳、`safeBack`、配置字段全部别名、reset ACK 的变量名差异、v7.3/h5py、采样率变化、327680 特殊路径、相位补偿、两个 Torch FIR、CUDA、输出失败后的状态一致性及 symbol EVM 的长捕获路径。新契约尚无具体设备、功率控制器、仿真 PA、闭环状态机、存储、文件入口或网页测试，这些属于后续阶段。
+当前没有直接覆盖：watchdog 真实事件和稳定等待、心跳、`safeBack`、配置字段全部别名、reset ACK 的变量名差异、v7.3/h5py、采样率变化、327680 特殊路径、相位补偿、两个 Torch FIR、CUDA、输出失败后的状态一致性及 symbol EVM 的长捕获路径。新链路尚无真实设备、持久存储、新文件入口或网页测试，这些属于后续阶段。
 
 标准验证命令为：
 
