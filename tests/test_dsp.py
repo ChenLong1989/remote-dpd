@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from remote_dpd.dsp import align_signal, align_and_average, circular_fir
+from remote_dpd.dsp import align_signal, fractional_shift, nmse_db
 
 
 class DSPTests(unittest.TestCase):
@@ -11,22 +11,21 @@ class DSPTests(unittest.TestCase):
         reference = rng.normal(size=128) + 1j * rng.normal(size=128)
         measured = np.roll(reference, 7) * (0.4 + 0.2j)
         aligned, delay, gain = align_signal(reference, measured)
-        self.assertLess(np.linalg.norm(aligned - reference) / np.linalg.norm(reference), 1e-10)
+        self.assertLess(
+            np.linalg.norm(aligned - reference) / np.linalg.norm(reference), 1e-10
+        )
         self.assertAlmostEqual(delay, -7.0, places=6)
         self.assertGreater(abs(gain), 1.0)
 
-    def test_packed_feedback_is_averaged(self):
-        reference = np.arange(32, dtype=np.float64) + 1j
-        captures = np.stack([reference, reference * (1 + 0.01j)], axis=1)
-        feedback = np.tile(captures, 5).reshape(-1, order="F")
-        averaged, delays, gains = align_and_average(reference, feedback)
-        self.assertEqual(len(delays), 10)
-        self.assertEqual(averaged.size, reference.size)
+    def test_fractional_shift_is_periodic_and_invertible(self):
+        signal = np.arange(32) + 1j * np.arange(32)[::-1]
+        shifted = fractional_shift(signal, 2.375)
+        restored = fractional_shift(shifted, -2.375)
+        np.testing.assert_allclose(restored, signal, atol=1e-12)
 
-    def test_circular_fir_preserves_length(self):
-        signal = np.arange(8, dtype=np.complex128)
-        output = circular_fir(signal, np.array([0.25, 0.5, 0.25]))
-        self.assertEqual(output.shape, signal.shape)
+    def test_nmse_reports_zero_error_floor(self):
+        signal = np.arange(16, dtype=np.float64) + 1j
+        self.assertLess(nmse_db(signal, signal), -300.0)
 
 
 if __name__ == "__main__":

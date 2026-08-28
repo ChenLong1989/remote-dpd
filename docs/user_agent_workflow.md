@@ -122,6 +122,8 @@ PR 合入后，Agent 负责收尾：
 | `docs/algorithm_runtime_design.md` | DPD runtime 生命周期、基础 ILC、注册表和数字安全边界 | 模块级 |
 | `docs/simulation_design.md` | 仿真 RF bench、有记忆 PA、反馈抓取和功率测量模型 | 模块级 |
 | `docs/controller_design.md` | 初始功率调节、闭环状态机、迭代记录、停止和安全收尾 | 模块级 |
+| `docs/storage_design.md` | 临时运行 artifact、清理保护和最终 MAT 结果契约 | 模块级 |
+| `docs/file_interface_design.md` | inbox/outbox MAT 命令、状态、幂等和并发契约 | 模块级 |
 
 > 后续阶段新增模块时，按同样约定新建模块设计文档（如 `deploy_design.md`），并在本表登记。
 > 跨模块边界的改动需同步更新 `system_design.md`。

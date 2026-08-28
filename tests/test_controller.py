@@ -370,6 +370,8 @@ class ClosedLoopControllerTests(unittest.TestCase):
         with self.assertRaises(ControllerStateError):
             controller.tune_power()
         self.assertEqual(controller.snapshot().state, ControllerState.READY)
+        self.assertEqual(controller.snapshot().device_type, "fake")
+        self.assertIsNone(controller.snapshot().completed_at)
 
     def test_capture_requests_split_at_complete_segment_boundaries(self):
         config = self.make_config(average_segment_count=5)
@@ -432,6 +434,8 @@ class ClosedLoopControllerTests(unittest.TestCase):
 
         self.assertEqual(manual.snapshot().state, ControllerState.COMPLETED)
         self.assertEqual(automatic_snapshot.state, ControllerState.COMPLETED)
+        self.assertIsNotNone(manual.snapshot().completed_at)
+        self.assertIsNotNone(automatic_snapshot.completed_at)
         self.assertIsNotNone(final_automatic)
         np.testing.assert_allclose(final_manual.y, final_automatic.y, atol=1e-12)
         np.testing.assert_allclose(final_manual.z, final_automatic.z, atol=1e-12)
@@ -459,6 +463,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
 
         snapshot = controller.snapshot()
         self.assertEqual(snapshot.state, ControllerState.FAILED)
+        self.assertIsNotNone(snapshot.completed_at)
         self.assertEqual(len(bench.uploaded_waveforms), upload_count)
         self.assertEqual(bench.measure_count, measure_count)
         self.assertEqual(len(bench.capture_requests), capture_count)
@@ -507,6 +512,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(controller.snapshot().state, ControllerState.STOPPED)
+        self.assertIsNotNone(controller.snapshot().completed_at)
         self.assertFalse(bench.transmitting)
         self.assertGreaterEqual(bench.safe_shutdown_count, 1)
 
@@ -618,6 +624,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
 
         self.assertEqual(completed.state, ControllerState.COMPLETED)
         self.assertEqual(after_stop.state, ControllerState.COMPLETED)
+        self.assertEqual(after_stop.completed_at, completed.completed_at)
         self.assertFalse(after_stop.stop_requested)
 
     def test_runtime_replacement_closes_both_instances_when_old_close_fails(self):

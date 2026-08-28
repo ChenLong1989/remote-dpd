@@ -1,7 +1,5 @@
-"""Remote DPD service and device-independent closed-loop contracts."""
+"""Device-driven DPD simulation, orchestration, and file command service."""
 
-from .algorithms import ILCConfig, ILCResult, create_engine
-from .config import LegacyConfig, config_from_mat
 from .controller import (
     ClosedLoopConfig,
     ClosedLoopController,
@@ -22,6 +20,12 @@ from .device import (
     list_rf_benches,
     register_rf_bench,
 )
+from .file_interface import (
+    CommandStatus,
+    FileCommandError,
+    FileCommandProcessor,
+    FileCommandService,
+)
 from .power_control import (
     PowerAdjustment,
     PowerControlCancelled,
@@ -30,6 +34,11 @@ from .power_control import (
     PowerControlResult,
 )
 from .preprocessing import CaptureBatch, FeedbackPreprocessor, PreprocessingResult
+from .result_export import (
+    ResultExportError,
+    build_final_payload,
+    export_final_mat,
+)
 from .runtime import (
     BasicILCRuntime,
     DPDRuntime,
@@ -43,8 +52,8 @@ from .safety import (
     validate_candidate,
     validate_reference,
 )
-from .service import RemoteDPDService
 from .simulation import SIMULATED_DEVICE_SCHEMA, SimulatedRFBench
+from .storage import RunRecorder, RunStorageError, RunStore
 
 __all__ = [
     "SIMULATED_DEVICE_SCHEMA",
@@ -53,6 +62,7 @@ __all__ = [
     "CaptureRequest",
     "ClosedLoopConfig",
     "ClosedLoopController",
+    "CommandStatus",
     "ControllerBusyError",
     "ControllerError",
     "ControllerSnapshot",
@@ -65,10 +75,10 @@ __all__ = [
     "DigitalSafetyError",
     "DigitalSafetyReport",
     "FeedbackPreprocessor",
-    "ILCConfig",
-    "ILCResult",
+    "FileCommandError",
+    "FileCommandProcessor",
+    "FileCommandService",
     "IterationRecord",
-    "LegacyConfig",
     "PowerAdjustment",
     "PowerControlCancelled",
     "PowerControlError",
@@ -76,14 +86,17 @@ __all__ = [
     "PowerController",
     "PreprocessingResult",
     "RFBench",
-    "RemoteDPDService",
+    "ResultExportError",
+    "RunRecorder",
+    "RunStorageError",
+    "RunStore",
     "RuntimeStepInput",
     "RuntimeStepResult",
     "SimulatedRFBench",
-    "config_from_mat",
-    "create_engine",
+    "build_final_payload",
     "create_rf_bench",
     "create_runtime",
+    "export_final_mat",
     "list_rf_benches",
     "register_rf_bench",
     "validate_candidate",

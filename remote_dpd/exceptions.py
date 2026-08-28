@@ -8,7 +8,3 @@ class MatProtocolError(RemoteDPDError):
 
 class UnsupportedMatVersion(MatProtocolError):
     """The MAT file requires an optional reader that is not installed."""
-
-
-class UnsupportedAlgorithm(RemoteDPDError):
-    """An algorithm name is not registered with the service."""

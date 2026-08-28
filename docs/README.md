@@ -4,11 +4,11 @@
 
 ## 当前状态
 
-当前默认运行入口仍是旧 MAT 文件监听服务。设备直控重构的阶段 1 和阶段 2 已建立设备能力、反馈预处理、DPD runtime、数字安全、仿真 RF bench、功率控制和单任务闭环控制器；这些新能力目前通过 Python API 使用，尚未接入默认 CLI。运行存储与新文件协议、网页控制台将在后续阶段完成。
+当前默认运行入口已经切换为新 inbox/outbox MAT 命令服务。设备直控重构的前三个阶段已完成设备能力、反馈预处理、DPD runtime、数字安全、仿真 RF bench、功率控制、单任务闭环、临时存储、正式结果和新文件协议。网页控制台将在下一阶段完成。
 
 ## 使用与消费
 
-- [`../README.md`](../README.md)：当前可运行服务、安装方式和旧文件协议概览。
+- [`../README.md`](../README.md)：当前可运行服务、安装方式和新文件命令概览。
 - [`system_design.md`](system_design.md)：当前系统实现及已批准的整体重构草案。
 
 ## 模块设计
@@ -18,6 +18,8 @@
 - [`algorithm_runtime_design.md`](algorithm_runtime_design.md)：版本化 DPD runtime、基础 ILC 和数字安全边界。
 - [`simulation_design.md`](simulation_design.md)：确定性有记忆 PA、仿真射频链路、抓取和功率模型。
 - [`controller_design.md`](controller_design.md)：初始功率调节、分步/自动闭环、状态机、停止与安全收尾。
+- [`storage_design.md`](storage_design.md)：完整临时运行记录、保留清理和最终 MAT 结果。
+- [`file_interface_design.md`](file_interface_design.md)：新 MAT 命令、状态、幂等、并发和重启扫描契约。
 
 ## 协作与 provenance
 

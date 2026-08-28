@@ -5,17 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "remote-dpd"
 version = "0.1.0"
-description = "MAT-compatible, MATLAB-free remote ILC DPD service"
+description = "Device-driven, hardware-independent ILC DPD service"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
-    "torch>=2.0",
     "watchdog>=3.0",
 ]
 
 [project.scripts]
-remote-dpd = "remote_dpd.run_filewatch:main"
+remote-dpd = "remote_dpd.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
