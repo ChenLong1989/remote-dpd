@@ -1,6 +1,6 @@
 # 闭环控制与功率安全设计
 
-本文描述 `remote_dpd/power_control.py` 和 `remote_dpd/controller.py` 的当前实现。控制器既可由 Python API 直接调用，也已接入默认 CLI 使用的文件命令服务；网页入口尚未实现。
+本文描述 `remote_dpd/power_control.py` 和 `remote_dpd/controller.py` 的当前实现。控制器可由 Python API 直接调用，也已同时接入 CLI 文件命令服务和本机 Web 控制台。
 
 ## 1. 配置和单任务边界
 
@@ -84,11 +84,13 @@ gap > 1.0 dB        -> 衰减减小 1.0 dB
 2. 在停止当前安全波形之前，先检查候选有限、峰值不超过 `0 dBFS`、RMS 不超过 `RMS(x)+2 dB`。
 3. 检查通过后执行 `stop_transmission → upload_waveform → start_transmission`；锁定 TX 衰减保持不变。
 4. 抓反馈前读取一次物理功率，只检查绝对安全上限。
-5. 根据 `receiver.max_capture_samples // len(x)` 计算每批最大完整段数，直到收满 `average_segment_count`。不能容纳一个完整周期时在配置或加载阶段拒绝。
+5. 根据 `receiver.max_capture_samples // len(x)` 计算每批最大完整段数，直到收满 `average_segment_count`。不能容纳一个完整周期时在配置或加载阶段拒绝；`len(x) * average_segment_count` 不得超过 1000 万样点。
 6. 使用每轮时延/相位对齐、跨段平均和第 0 轮固定增益生成 `z_i`。
 7. 只有上述步骤全部成功后才原子追加 `IterationRecord`。
 
 候选数字检查失败时，不停止或上传候选，也不执行物理功率测量和抓取；任务随后进入统一失败收尾。物理功率越界发生在上传之后，但一定在抓反馈之前，因此越界轮不会产生伪造的反馈记录。
+
+controller 会保留第 0 轮至第 N 轮的波形和诊断，因此还要求 `len(x) * (max_iterations + 1)` 不超过 2000 万样点。两项乘积预算在配置与参考同时可用时、任何抓取或迭代开始前校验，防止合法单项上限组合成不可承受的内存请求。
 
 ## 6. 迭代记录和 snapshot
 

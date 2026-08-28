@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Local control deck for simulated and instrument-backed ILC DPD closed loops."
+    />
+    <title>Remote DPD Control Deck</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <p class="eyebrow">RF LINEARIZATION LAB</p>
+          <h1>DPD Control Deck</h1>
+        </div>
+      </div>
+      <div class="system-state" aria-live="polite">
+        <span class="status-led" id="status-led"></span>
+        <div>
+          <span class="state-label">Controller</span>
+          <strong id="controller-state">IDLE</strong>
+        </div>
+        <div class="state-divider"></div>
+        <div>
+          <span class="state-label">Run</span>
+          <strong id="run-id">—</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="control-rail" aria-label="Closed-loop setup">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SETUP</p>
+            <h2>Signal path</h2>
+          </div>
+          <span class="step-index">01</span>
+        </div>
+
+        <div class="field-stack">
+          <label for="waveform-select">Reference waveform</label>
+          <div class="field-row">
+            <select id="waveform-select" disabled>
+              <option>Waveform library loading…</option>
+            </select>
+            <button class="button secondary compact" id="refresh-waveforms" type="button" disabled>
+              Refresh
+            </button>
+          </div>
+          <p class="field-hint" id="waveform-meta">Periodic MAT vector · variable x</p>
+        </div>
+
+        <div class="field-stack">
+          <label for="device-select">RF bench</label>
+          <select id="device-select" disabled>
+            <option value="simulated">Simulated RF bench</option>
+          </select>
+        </div>
+
+        <div class="config-grid" aria-label="Common device configuration">
+          <label>
+            <span>Center frequency</span>
+            <div class="unit-input"><input id="center-frequency" value="3500" inputmode="decimal" /><b>MHz</b></div>
+          </label>
+          <label>
+            <span>Sample rate</span>
+            <div class="unit-input"><input id="sample-rate" value="983.04" inputmode="decimal" /><b>MS/s</b></div>
+          </label>
+          <label>
+            <span>Target power</span>
+            <div class="unit-input"><input id="target-power" value="-10.0" inputmode="decimal" /><b>dBm</b></div>
+          </label>
+          <label>
+            <span>Average segments</span>
+            <div class="unit-input"><input id="average-segments" value="10" inputmode="numeric" /><b>N</b></div>
+          </label>
+        </div>
+
+        <details class="device-options" open>
+          <summary>
+            <span>Device parameters</span>
+            <span class="summary-meta" id="device-schema-label">SCHEMA</span>
+          </summary>
+          <div id="device-option-fields"></div>
+          <div class="coefficient-table" id="coefficient-table" role="table" aria-label="Memory polynomial coefficients">
+            <div class="coefficient-head" role="row">
+              <span>Order</span><span>Memory</span><span>Real</span><span>Imag / remove</span>
+            </div>
+            <div id="coefficient-rows"></div>
+          </div>
+          <button class="text-button" id="add-coefficient" type="button">+ Add coefficient</button>
+        </details>
+
+        <details class="device-options">
+          <summary>
+            <span>Advanced loop settings</span>
+            <span class="summary-meta">SAFETY</span>
+          </summary>
+          <div class="config-grid advanced-grid">
+            <label><span>Safety power</span><div class="unit-input"><input id="safety-power" value="0" /><b>dBm</b></div></label>
+            <label><span>Initial attenuation</span><div class="unit-input"><input id="initial-attenuation" value="30" /><b>dB</b></div></label>
+            <label><span>Minimum attenuation</span><div class="unit-input"><input id="minimum-attenuation" value="0" /><b>dB</b></div></label>
+            <label><span>Maximum attenuation</span><div class="unit-input"><input id="maximum-attenuation" value="60" /><b>dB</b></div></label>
+            <label><span>Settle time</span><div class="unit-input"><input id="settle-seconds" value="0.1" /><b>s</b></div></label>
+            <label><span>Adjustments</span><div class="unit-input"><input id="max-adjustments" value="100" /><b>max</b></div></label>
+            <label><span>Call timeout</span><div class="unit-input"><input id="call-timeout" value="10" /><b>s</b></div></label>
+            <label><span>ILC iterations</span><div class="unit-input"><input id="max-iterations" value="5" /><b>N</b></div></label>
+            <label><span>ILC mu</span><div class="unit-input"><input id="ilc-mu" value="0.5" /><b>μ</b></div></label>
+            <label><span>TX channel</span><input id="tx-channel" value="0" /></label>
+            <label><span>RX channel</span><input id="rx-channel" value="0" /></label>
+            <label><span>Trigger</span><input id="trigger-source" value="immediate" /></label>
+          </div>
+        </details>
+
+        <div class="action-stack">
+          <button class="button primary command-button" id="action-run" type="button" disabled>
+            <span>Run automatic loop</span><kbd>R</kbd>
+          </button>
+          <div class="split-actions">
+            <button class="button secondary command-button" id="action-load" type="button" disabled>Load x</button>
+            <button class="button secondary command-button" id="action-configure" type="button" disabled>Configure</button>
+            <button class="button secondary command-button" id="action-connect" type="button" disabled>Connect</button>
+            <button class="button secondary command-button" id="action-disconnect" type="button" disabled>Disconnect</button>
+            <button class="button secondary command-button" id="action-start-tx" type="button" disabled>Start TX</button>
+            <button class="button secondary command-button" id="action-stop-tx" type="button" disabled>Stop TX</button>
+            <button class="button secondary command-button" id="action-power" type="button" disabled>Power tune</button>
+            <button class="button secondary command-button" id="action-calibrate" type="button" disabled>Calibrate</button>
+            <button class="button secondary command-button" id="action-step" type="button" disabled>ILC step</button>
+            <button class="button secondary command-button" id="action-reset" type="button" disabled>Reset</button>
+            <button class="button secondary command-button" id="action-export" type="button" disabled>Export MAT</button>
+          </div>
+          <button class="button danger" id="action-stop" type="button" disabled>Safety stop</button>
+          <div class="command-message" id="command-message" role="status">Console initializing…</div>
+        </div>
+      </section>
+
+      <section class="monitor" aria-label="Closed-loop monitor">
+        <div class="monitor-header">
+          <div>
+            <p class="eyebrow">LIVE SESSION</p>
+            <h2>Closed-loop telemetry</h2>
+          </div>
+          <div class="iteration-badge">
+            <span>Iteration</span>
+            <strong id="iteration-value">— / —</strong>
+          </div>
+        </div>
+
+        <div class="metric-strip">
+          <article class="metric-card accent-cyan">
+            <span>Output power</span><strong id="power-value">—</strong><small>dBm</small>
+          </article>
+          <article class="metric-card accent-amber">
+            <span>TX attenuation</span><strong id="attenuation-value">—</strong><small>dB</small>
+          </article>
+          <article class="metric-card accent-violet">
+            <span>Aligned NMSE</span><strong id="nmse-value">—</strong><small>dB</small>
+          </article>
+          <article class="metric-card accent-green">
+            <span>Fixed gain</span><strong id="gain-value">—</strong><small>×</small>
+          </article>
+        </div>
+
+        <div class="plot-grid">
+          <article class="plot-card wide">
+            <div class="card-heading">
+              <div><span class="plot-kicker">WAVEFORM</span><h3>Envelope comparison</h3></div>
+              <div class="legend"><span class="cyan">x</span><span class="amber">y</span><span class="violet">z</span></div>
+            </div>
+            <canvas id="waveform-plot" height="230" aria-label="Waveform envelope plot"></canvas>
+          </article>
+          <article class="plot-card">
+            <div class="card-heading">
+              <div><span class="plot-kicker">LINEARITY</span><h3>NMSE history</h3></div>
+            </div>
+            <canvas id="nmse-plot" height="230" aria-label="NMSE history plot"></canvas>
+          </article>
+        </div>
+
+        <div class="lower-grid">
+          <article class="data-card">
+            <div class="card-heading"><div><span class="plot-kicker">ROUNDS</span><h3>Iteration ledger</h3></div></div>
+            <div class="empty-state" id="iteration-empty">
+              <span class="empty-orbit" aria-hidden="true"></span>
+              <strong>No evaluated rounds</strong>
+              <p>Configure a bench and start calibration to populate metrics.</p>
+            </div>
+            <div class="ledger" id="iteration-ledger" hidden></div>
+            <div class="power-trace" id="power-trace" hidden></div>
+          </article>
+          <article class="data-card">
+            <div class="card-heading"><div><span class="plot-kicker">ARTIFACTS</span><h3>Temporary runs</h3></div><button class="text-button" id="refresh-runs">Refresh</button></div>
+            <div class="run-placeholder" id="run-placeholder">
+              <span>Run storage is ready</span>
+              <small>Artifacts are retained for 7 days</small>
+            </div>
+            <div class="run-list" id="run-list"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <div class="connection-banner" id="connection-banner" role="status">
+      <span></span> Connecting to local control service…
+    </div>
+    <dialog class="run-dialog" id="run-dialog">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">RUN INSPECTOR</p><h2 id="run-dialog-title">Temporary run</h2></div>
+        <button class="dialog-close" id="run-dialog-close" type="button" aria-label="Close run inspector">×</button>
+      </div>
+      <div class="dialog-grid">
+        <section><h3>Snapshot</h3><pre id="run-dialog-snapshot"></pre></section>
+        <section><h3>Effective configuration</h3><pre id="run-dialog-config"></pre></section>
+      </div>
+      <section><h3>Structured events</h3><div class="event-list" id="run-dialog-events"></div></section>
+    </dialog>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

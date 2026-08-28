@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import numpy as np
 
@@ -40,10 +40,26 @@ def load_mat(path: str | Path) -> dict[str, Any]:
     opportunistically when h5py is installed.
     """
     path = Path(path)
+    return _load_mat_source(path, label=str(path))
+
+
+def load_mat_file(handle: BinaryIO) -> dict[str, Any]:
+    """Load a MAT payload from an already opened seekable binary file."""
+    if not hasattr(handle, "read") or not hasattr(handle, "seek"):
+        raise TypeError("handle must be a seekable binary file")
+    try:
+        handle.seek(0)
+    except (OSError, ValueError) as exc:
+        raise MatProtocolError("failed to seek opened MAT file") from exc
+    return _load_mat_source(handle, label="opened MAT file")
+
+
+def _load_mat_source(source: str | Path | BinaryIO, *, label: str) -> dict[str, Any]:
+    """Decode one path or caller-owned file object without closing it."""
     try:
         from scipy.io import loadmat
 
-        raw = loadmat(path, squeeze_me=True, struct_as_record=False)
+        raw = loadmat(source, squeeze_me=True, struct_as_record=False)
         return {
             key: _unwrap(value)
             for key, value in raw.items()
@@ -54,12 +70,17 @@ def load_mat(path: str | Path) -> dict[str, Any]:
             import h5py  # type: ignore
         except ImportError as h5_exc:
             raise UnsupportedMatVersion(
-                f"{path} is likely MATLAB v7.3; install h5py to read it"
+                f"{label} is likely MATLAB v7.3; install h5py to read it"
             ) from h5_exc
-        with h5py.File(path, "r") as handle:
+        if hasattr(source, "seek"):
+            try:
+                source.seek(0)  # type: ignore[union-attr]
+            except (OSError, ValueError) as exc:
+                raise MatProtocolError(f"failed to seek {label}") from exc
+        with h5py.File(source, "r") as handle:
             return {key: _h5_value(value) for key, value in handle.items()}
     except (OSError, ValueError) as exc:
-        raise MatProtocolError(f"failed to read MAT file {path}: {exc}") from exc
+        raise MatProtocolError(f"failed to read MAT file {label}: {exc}") from exc
 
 
 def _h5_value(value: Any) -> Any:

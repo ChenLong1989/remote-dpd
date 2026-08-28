@@ -1,10 +1,13 @@
 import json
+import socket
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
+import uvicorn
 from scipy.io import loadmat, savemat
 
 from remote_dpd.cli import build_parser, run
@@ -17,6 +20,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(args.exchange_root, "/tmp/exchange")
         self.assertTrue(args.once)
         self.assertEqual(args.retention_days, 7.0)
+        self.assertEqual(args.mode, "file")
 
     def test_once_creates_service_directories_and_exits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -48,6 +52,45 @@ class CLITests(unittest.TestCase):
             stop_event.set()
 
             self.assertEqual(run(args, stop_event=stop_event), 0)
+
+    def test_web_mode_is_fixed_to_loopback_and_honors_stop_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            args = build_parser().parse_args(
+                [
+                    "--exchange-root",
+                    str(root / "exchange"),
+                    "--mode",
+                    "web",
+                    "--web-port",
+                    str(port),
+                ]
+            )
+            stop_event = threading.Event()
+            stop_event.set()
+
+            with patch("uvicorn.Config", wraps=uvicorn.Config) as config:
+                self.assertEqual(run(args, stop_event=stop_event), 0)
+
+            self.assertTrue((root / "exchange" / "waveforms").is_dir())
+            self.assertEqual(config.call_args.kwargs["host"], "127.0.0.1")
+            self.assertEqual(config.call_args.kwargs["workers"], 1)
+            self.assertFalse(config.call_args.kwargs["proxy_headers"])
+            self.assertEqual(
+                config.call_args.kwargs["timeout_graceful_shutdown"],
+                10.0,
+            )
+
+    def test_once_is_rejected_in_web_mode(self):
+        args = build_parser().parse_args(
+            ["--exchange-root", "/tmp/exchange", "--mode", "web", "--once"]
+        )
+
+        with self.assertRaisesRegex(ValueError, "file mode"):
+            run(args)
 
     def test_once_processes_a_complete_simulated_run(self):
         with tempfile.TemporaryDirectory() as directory:

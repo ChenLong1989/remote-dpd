@@ -9,7 +9,7 @@ import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from .controller import (
     ControllerState,
     IterationRecord,
 )
-from .protocol import load_mat, save_mat
+from .protocol import load_mat, load_mat_file, save_mat
 
 FINAL_RESULT_SCHEMA_VERSION = 1
 _FINAL_FIELDS = frozenset(
@@ -146,6 +146,20 @@ def load_final_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
         raw = load_mat(target)
     except Exception as exc:
         raise ResultExportError(f"failed to load final result: {exc}") from exc
+    return _validate_final_payload(raw)
+
+
+def load_final_payload_file(handle: BinaryIO) -> dict[str, Any]:
+    """Validate a final result through a caller-owned, already opened file."""
+    try:
+        raw = load_mat_file(handle)
+    except Exception as exc:
+        raise ResultExportError(f"failed to load final result: {exc}") from exc
+    return _validate_final_payload(raw)
+
+
+def _validate_final_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one decoded final-result mapping."""
     if set(raw) != _FINAL_FIELDS:
         missing = sorted(_FINAL_FIELDS - set(raw))
         unknown = sorted(set(raw) - _FINAL_FIELDS)

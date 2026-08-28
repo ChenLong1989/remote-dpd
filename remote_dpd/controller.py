@@ -31,6 +31,9 @@ from .safety import (
     validate_reference,
 )
 
+MAX_CAPTURE_WORKING_SAMPLES = 10_000_000
+MAX_RETAINED_ROUND_SAMPLES = 20_000_000
+
 
 class ControllerState(str, Enum):
     """Externally visible states of one closed-loop controller."""
@@ -985,6 +988,20 @@ class ClosedLoopController:
         if max_samples < reference.size:
             raise ValueError(
                 "receiver.max_capture_samples cannot hold one complete reference period"
+            )
+        capture_samples = (
+            int(reference.size) * config.device_config.average_segment_count
+        )
+        if capture_samples > MAX_CAPTURE_WORKING_SAMPLES:
+            raise ValueError(
+                "reference length times average_segment_count exceeds the "
+                f"capture working limit of {MAX_CAPTURE_WORKING_SAMPLES} samples"
+            )
+        retained_samples = int(reference.size) * (config.max_iterations + 1)
+        if retained_samples > MAX_RETAINED_ROUND_SAMPLES:
+            raise ValueError(
+                "reference length times recorded round count exceeds the "
+                f"retained-history limit of {MAX_RETAINED_ROUND_SAMPLES} samples"
             )
 
     def _effective_config(self, config: ClosedLoopConfig) -> ClosedLoopConfig:

@@ -10,7 +10,12 @@ from unittest.mock import patch
 import numpy as np
 from scipy.io import loadmat, savemat
 
-from remote_dpd.controller import ClosedLoopController, ControllerState
+from remote_dpd.controller import (
+    ClosedLoopController,
+    ControllerErrorInfo,
+    ControllerSnapshot,
+    ControllerState,
+)
 from remote_dpd.file_interface import (
     CommandStatus,
     FileCommandError,
@@ -110,6 +115,19 @@ class _GateSimulatedBench(SimulatedRFBench):
         return super().capture(request, timeout_seconds)
 
 
+class _GateDisconnectBench(SimulatedRFBench):
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        super().__init__()
+        self._entered = entered
+        self._release = release
+
+    def disconnect(self, timeout_seconds):
+        self._entered.set()
+        if not self._release.wait(5.0):
+            raise TimeoutError("test disconnect gate timed out")
+        return super().disconnect(timeout_seconds)
+
+
 class _DispatchRaceProcessor(FileCommandProcessor):
     def __init__(self) -> None:
         super().__init__()
@@ -179,6 +197,33 @@ class FileCommandServiceTests(unittest.TestCase):
         self.assertIn("metrics", payload)
         self.assertIn("config", payload)
 
+    def test_run_replaces_configuration_and_reference_as_one_input_pair(self):
+        old_reference = _reference(128)
+        new_reference = _reference(32)
+        self.process("paired-old-load", "load", x=old_reference)
+        self.process(
+            "paired-old-configure",
+            "configure",
+            config=_configuration(sample_count=128, max_iterations=1),
+        )
+
+        status = self.process(
+            "paired-new-run",
+            "run",
+            x=new_reference,
+            config=_configuration(sample_count=32, max_iterations=1),
+        )
+
+        self.assertEqual(status.state, "completed")
+        result = loadmat(
+            self.service.result_path("paired-new-run"),
+            squeeze_me=True,
+        )
+        np.testing.assert_allclose(
+            np.asarray(result["x"]).reshape(-1),
+            new_reference,
+        )
+
     def test_all_stepwise_commands_use_the_same_controller(self):
         loaded = self.process("manual-load", "load", x=self.x)
         configured = self.process(
@@ -208,6 +253,66 @@ class FileCommandServiceTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         self.assertFalse(snapshot.configured)
         self.assertFalse(snapshot.reference_loaded)
+
+    def test_manual_connection_and_transmission_commands_are_exposed(self):
+        self.process("lifecycle-load", "load", x=self.x)
+        self.process("lifecycle-configure", "configure", config=_configuration())
+
+        started = self.process("lifecycle-start", "start_transmission")
+        self.assertEqual(started.state, "ready")
+        self.assertTrue(self.service.processor.snapshot().transmitting)
+
+        stopped = self.process("lifecycle-stop-tx", "stop_transmission")
+        self.assertEqual(stopped.state, "ready")
+        self.assertFalse(self.service.processor.snapshot().transmitting)
+
+        disconnected = self.process("lifecycle-disconnect", "disconnect")
+        self.assertEqual(disconnected.state, "idle")
+        self.assertFalse(self.service.processor.snapshot().connected)
+
+        connected = self.process("lifecycle-connect", "connect")
+        self.assertEqual(connected.state, "idle")
+        self.assertTrue(self.service.processor.snapshot().connected)
+        self.assertFalse(self.service.processor.snapshot().configured)
+
+    def test_stop_transmission_retry_and_disconnect_preserve_run_consistency(self):
+        self.service.close()
+        store = RunStore(self.root / "lifecycle-runs")
+        self.service = FileCommandService(
+            self.root / "lifecycle-exchange",
+            run_store=store,
+            status_poll_seconds=0.002,
+        )
+        self.process("stored-lifecycle-load", "load", x=self.x)
+        configured = self.process(
+            "stored-lifecycle-configure",
+            "configure",
+            config=_configuration(),
+        )
+        self.process("stored-lifecycle-power", "power_tune")
+        self.process("stored-lifecycle-calibration", "calibrate")
+        stop_path = _write_command(
+            self.service,
+            "stored-lifecycle-stop-tx",
+            "stop_transmission",
+        )
+
+        first_stop = self.service.process_file(stop_path)
+        second_stop = self.service.process_file(stop_path)
+        disconnected = self.process("stored-lifecycle-disconnect", "disconnect")
+
+        self.assertEqual(first_stop.state, "calibrated")
+        self.assertEqual(second_stop, first_stop)
+        self.assertEqual(disconnected.state, "idle")
+        self.assertFalse(self.service.processor.snapshot().connected)
+        self.assertIsNone(self.service.processor.run_id)
+        manifest = store.open_run(configured.run_id).read_manifest()
+        self.assertEqual(manifest["status"], "stopped")
+        self.assertEqual(
+            [entry["iteration"] for entry in manifest["iterations"]],
+            [0],
+        )
+        store.close()
 
     def test_run_store_records_the_complete_automatic_run(self):
         self.service.close()
@@ -553,6 +658,104 @@ class FileCommandServiceTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.service.read_status("factory-stop").state, "stopped")
         self.assertFalse(self.service.result_path("factory-run").exists())
+
+    def test_stop_monitor_recognizes_disconnect_idle_as_completed(self):
+        self.service.close()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def factory(_device_type):
+            return ClosedLoopController(_GateDisconnectBench(entered, release))
+
+        self.service = FileCommandService(
+            self.root / "disconnect-gated-exchange",
+            controller_factory=factory,
+            status_poll_seconds=0.002,
+        )
+        self.process("disconnect-gated-load", "load", x=self.x)
+        self.process(
+            "disconnect-gated-configure",
+            "configure",
+            config=_configuration(),
+        )
+        disconnect_path = _write_command(
+            self.service,
+            "disconnect-gated-target",
+            "disconnect",
+        )
+        results = []
+        disconnect_thread = threading.Thread(
+            target=lambda: results.append(self.service.process_file(disconnect_path))
+        )
+        disconnect_thread.start()
+        self.assertTrue(entered.wait(5.0))
+
+        stop_path = _write_command(
+            self.service,
+            "disconnect-gated-stop",
+            "stop",
+        )
+        stop_status = self.service.process_file(stop_path)
+        release.set()
+        disconnect_thread.join(5.0)
+
+        self.assertFalse(disconnect_thread.is_alive())
+        self.assertEqual(results[0].state, "idle")
+        self.assertEqual(stop_status.state, "stopping")
+        deadline = time.monotonic() + 5.0
+        while self.service.read_status("disconnect-gated-stop").state == "stopping":
+            if time.monotonic() >= deadline:
+                self.fail("disconnect stop status did not become terminal")
+            time.sleep(0.01)
+        completed_stop = self.service.read_status("disconnect-gated-stop")
+        self.assertEqual(completed_stop.state, "completed")
+        self.assertEqual(completed_stop.error_code, "")
+
+    def test_stop_monitor_never_masks_a_failed_shutdown_snapshot(self):
+        target = CommandStatus(
+            command_id="shutdown-target",
+            accepted=True,
+            state="ready",
+            iteration=-1,
+            message="reference transmission started",
+            error_code="",
+            timestamp="2026-08-28T00:00:00+00:00",
+        )
+        self.service._write_status(target)
+        failed_snapshot = ControllerSnapshot(
+            state=ControllerState.FAILED,
+            connected=True,
+            configured=True,
+            reference_loaded=True,
+            transmitting=True,
+            stop_requested=True,
+            active_operation=None,
+            iteration=None,
+            max_iterations=2,
+            gain_correction=None,
+            locked_attenuation_db=None,
+            latest_power_dbm=None,
+            config=None,
+            device_type="simulated",
+            completed_at="2026-08-28T00:00:00+00:00",
+            last_error=ControllerErrorInfo(
+                operation="request_stop",
+                code="shutdown_failed",
+                exception_type="RuntimeError",
+                message="RF transmission could not be stopped",
+            ),
+        )
+
+        status = self.service._stop_status_from_target(
+            "shutdown-stop",
+            "shutdown-target",
+            target_action="start_transmission",
+            requested_snapshot=failed_snapshot,
+        )
+
+        self.assertEqual(status.state, "failed")
+        self.assertEqual(status.error_code, "shutdown_failed")
+        self.assertIn("could not be stopped", status.message)
 
     def test_stop_reaches_processor_even_when_status_write_fails(self):
         stop_path = _write_command(self.service, "unsafe-status-stop", "stop")
@@ -1351,6 +1554,18 @@ class FileCommandServiceTests(unittest.TestCase):
 
         self.assertEqual(first.state, "idle")
         self.assertEqual(second, first)
+
+    def test_load_after_reset_has_a_terminal_loaded_status(self):
+        self.process("reload-config", "configure", config=_configuration())
+        self.process("reload-reset", "reset")
+        path = _write_command(self.service, "reload-reference", "load", x=self.x)
+
+        first = self.service.process_file(path)
+        second = self.service.process_file(path)
+
+        self.assertEqual(first.state, "loaded")
+        self.assertEqual(second, first)
+        self.assertTrue(self.service.processor.snapshot().reference_loaded)
 
     def test_reset_stops_transmission_even_when_run_storage_fails(self):
         self.service.close()

@@ -25,6 +25,7 @@ from .file_interface import (
     FileCommandError,
     FileCommandProcessor,
     FileCommandService,
+    parse_configuration_json,
 )
 from .power_control import (
     PowerAdjustment,
@@ -54,6 +55,9 @@ from .safety import (
 )
 from .simulation import SIMULATED_DEVICE_SCHEMA, SimulatedRFBench
 from .storage import RunRecorder, RunStorageError, RunStore
+from .waveforms import WaveformAccessError, WaveformRepository
+from .web import create_web_app
+from .web_bridge import WebBridgeError, WebCommandBridge
 
 __all__ = [
     "SIMULATED_DEVICE_SCHEMA",
@@ -93,11 +97,17 @@ __all__ = [
     "RuntimeStepInput",
     "RuntimeStepResult",
     "SimulatedRFBench",
+    "WaveformAccessError",
+    "WaveformRepository",
+    "WebBridgeError",
+    "WebCommandBridge",
     "build_final_payload",
     "create_rf_bench",
     "create_runtime",
+    "create_web_app",
     "export_final_mat",
     "list_rf_benches",
+    "parse_configuration_json",
     "register_rf_bench",
     "validate_candidate",
     "validate_reference",
