@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import logging
 import threading
 from pathlib import Path
@@ -33,17 +34,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("file", "web"),
         default="file",
-        help="run the MAT inbox service or the loopback Web console",
+        help="run the MAT inbox service or the trusted-network Web console",
     )
     parser.add_argument(
         "--waveform-root",
         help="Web waveform library root (default: <exchange-root>/waveforms)",
     )
     parser.add_argument(
+        "--web-host",
+        default="127.0.0.1",
+        help=("IPv4 bind address (default: 127.0.0.1; use 0.0.0.0 for trusted LAN)"),
+    )
+    parser.add_argument(
+        "--web-allowed-host",
+        action="append",
+        default=[],
+        help=("trusted private IPv4 Host header; repeat for multiple LAN addresses"),
+    )
+    parser.add_argument(
         "--web-port",
         type=int,
         default=8000,
-        help="loopback Web console port",
+        help="Web console port",
     )
     parser.add_argument(
         "--retention-days",
@@ -84,6 +96,10 @@ def run(args: argparse.Namespace, *, stop_event: threading.Event | None = None) 
         raise ValueError("--once is only valid in file mode")
     if isinstance(args.web_port, bool) or not 1 <= int(args.web_port) <= 65535:
         raise ValueError("web_port must be between 1 and 65535")
+    web_host, web_allowed_hosts = _validate_web_network(
+        args.web_host,
+        args.web_allowed_host,
+    )
 
     store = RunStore(
         runtime_root,
@@ -116,10 +132,11 @@ def run(args: argparse.Namespace, *, stop_event: threading.Event | None = None) 
                 command_service=service,
                 run_store=store,
                 waveform_root=waveform_root,
+                allowed_hosts=web_allowed_hosts,
             )
             config = uvicorn.Config(
                 app,
-                host="127.0.0.1",
+                host=web_host,
                 port=int(args.web_port),
                 log_level=args.log_level.lower(),
                 workers=1,
@@ -153,6 +170,73 @@ def run(args: argparse.Namespace, *, stop_event: threading.Event | None = None) 
 def _stop_web_server(stop_event: threading.Event, server: Any) -> None:
     stop_event.wait()
     server.should_exit = True
+
+
+def _validate_web_network(
+    host: object,
+    allowed_hosts: object,
+) -> tuple[str, tuple[str, ...]]:
+    bind_address = _parse_bind_address(host)
+    if isinstance(allowed_hosts, (str, bytes)) or not isinstance(
+        allowed_hosts,
+        (list, tuple),
+    ):
+        raise TypeError("web_allowed_host must be a sequence of IPv4 addresses")
+    normalized_allowed: list[str] = []
+    allowed_addresses: list[ipaddress.IPv4Address] = []
+    for value in allowed_hosts:
+        address = _parse_allowed_address(value)
+        normalized = str(address)
+        if normalized not in normalized_allowed:
+            normalized_allowed.append(normalized)
+            allowed_addresses.append(address)
+    if not bind_address.is_loopback and not any(
+        not address.is_loopback for address in allowed_addresses
+    ):
+        raise ValueError(
+            "non-loopback web_host requires at least one non-loopback web_allowed_host"
+        )
+    if (
+        not bind_address.is_loopback
+        and not bind_address.is_unspecified
+        and str(bind_address) not in normalized_allowed
+    ):
+        raise ValueError("a specific LAN web_host must also be a web_allowed_host")
+    return str(bind_address), tuple(normalized_allowed)
+
+
+def _parse_bind_address(value: object) -> ipaddress.IPv4Address:
+    address = _parse_ipv4(value, "web_host")
+    if address.is_loopback and address != ipaddress.IPv4Address("127.0.0.1"):
+        raise ValueError("loopback web_host must be 127.0.0.1")
+    if not (address.is_loopback or address.is_private or address.is_unspecified):
+        raise ValueError("web_host must be loopback, private, or 0.0.0.0")
+    if address.is_multicast or address.is_reserved:
+        raise ValueError("web_host must be a unicast IPv4 address or 0.0.0.0")
+    return address
+
+
+def _parse_allowed_address(value: object) -> ipaddress.IPv4Address:
+    address = _parse_ipv4(value, "web_allowed_host")
+    if (
+        address.is_unspecified
+        or address.is_multicast
+        or address.is_reserved
+        or not (address.is_loopback or address.is_private)
+    ):
+        raise ValueError(
+            "web_allowed_host must be a private or loopback unicast IPv4 address"
+        )
+    return address
+
+
+def _parse_ipv4(value: object, name: str) -> ipaddress.IPv4Address:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise TypeError(f"{name} must be an IPv4 address string")
+    try:
+        return ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise ValueError(f"{name} must be an IPv4 address") from exc
 
 
 def main(argv: list[str] | None = None) -> int:

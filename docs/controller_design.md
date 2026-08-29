@@ -1,6 +1,6 @@
 # 闭环控制与功率安全设计
 
-本文描述 `remote_dpd/power_control.py` 和 `remote_dpd/controller.py` 的当前实现。控制器可由 Python API 直接调用，也已同时接入 CLI 文件命令服务和本机 Web 控制台。
+本文描述 `remote_dpd/power_control.py` 和 `remote_dpd/controller.py` 的当前实现。控制器可由 Python API 直接调用，也已同时接入 CLI 文件命令服务和可信网络 Web 控制台。
 
 ## 1. 配置和单任务边界
 

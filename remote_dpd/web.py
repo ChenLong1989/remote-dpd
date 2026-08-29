@@ -1,14 +1,15 @@
-"""Local-only FastAPI console for the shared closed-loop command service."""
+"""Trusted-network FastAPI console for the shared closed-loop command service."""
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import stat
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from importlib.resources import files
@@ -41,6 +42,7 @@ MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 100_000
 MAX_SSE_CLIENTS = 8
 SSE_STATE_REFRESH_SECONDS = 0.5
+LOOPBACK_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 _STATIC_ROOT = Path(str(files("remote_dpd").joinpath("web_static")))
 
 
@@ -217,8 +219,10 @@ def create_web_app(
     command_service: FileCommandService,
     run_store: RunStore,
     waveform_root: str | Path,
+    allowed_hosts: Iterable[str] = (),
 ) -> FastAPI:
-    """Create a loopback console around the same coordinator as MAT commands."""
+    """Create a trusted-network console around the shared MAT coordinator."""
+    trusted_hosts = _normalize_trusted_hosts(allowed_hosts)
     resources = ExitStack()
     try:
         repository = WaveformRepository(waveform_root)
@@ -260,7 +264,7 @@ def create_web_app(
     app.state.console = context
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["127.0.0.1", "localhost", "[::1]"],
+        allowed_hosts=list(trusted_hosts),
     )
 
     @app.middleware("http")
@@ -729,6 +733,32 @@ def _safe_path_component(value: object) -> bool:
     )
 
 
+def _normalize_trusted_hosts(values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("allowed_hosts must be an iterable of IPv4 address strings")
+    normalized = list(LOOPBACK_ALLOWED_HOSTS)
+    for value in values:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise TypeError("allowed_hosts must contain IPv4 address strings")
+        try:
+            address = ipaddress.IPv4Address(value)
+        except ipaddress.AddressValueError as exc:
+            raise ValueError("allowed_hosts must contain IPv4 addresses") from exc
+        if (
+            address.is_unspecified
+            or address.is_multicast
+            or address.is_reserved
+            or not (address.is_loopback or address.is_private)
+        ):
+            raise ValueError(
+                "allowed_hosts must contain private or loopback unicast addresses"
+            )
+        host = str(address)
+        if host not in normalized:
+            normalized.append(host)
+    return tuple(normalized)
+
+
 def _required_flag(name: str) -> int:
     value = getattr(os, name, None)
     if value is None:
@@ -742,6 +772,7 @@ def _optional_flag(name: str) -> int:
 
 __all__ = [
     "CONTROL_HEADER",
+    "LOOPBACK_ALLOWED_HOSTS",
     "MAX_CONTROL_BODY_BYTES",
     "WEB_API_VERSION",
     "WebAPIError",

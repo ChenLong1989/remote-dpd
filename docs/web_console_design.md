@@ -1,6 +1,6 @@
-# 本机 Web 控制台设计
+# 可信网络 Web 控制台设计
 
-本文描述 `remote_dpd/web.py`、`remote_dpd/web_bridge.py`、`remote_dpd/waveforms.py` 和 `remote_dpd/web_static/` 的当前实现。控制台面向本机单用户操作，不提供登录、多用户、远程公网或多设备并行能力。
+本文描述 `remote_dpd/web.py`、`remote_dpd/web_bridge.py`、`remote_dpd/waveforms.py` 和 `remote_dpd/web_static/` 的当前实现。控制台面向本机或可信单用户局域网操作，不提供登录、多用户、远程公网或多设备并行能力。
 
 ## 1. 启动和部署边界
 
@@ -14,7 +14,19 @@ remote-dpd \
   --web-port 8000
 ```
 
-服务固定绑定 `127.0.0.1`、单 worker 且关闭 proxy headers；CLI 不提供绑定 `0.0.0.0`、LAN 或公网地址的选项。`waveform-root` 未指定时使用 `<exchange-root>/waveforms`。
+默认 `--web-host=127.0.0.1`。可信 LAN 使用 `--web-host 0.0.0.0` 并至少显式提供一个非 loopback `--web-allowed-host`，例如：
+
+```bash
+remote-dpd \
+  --exchange-root /opt/remote-dpd/exchange \
+  --mode web \
+  --waveform-root /opt/remote-dpd/waveforms \
+  --web-host 0.0.0.0 \
+  --web-allowed-host 192.168.3.100 \
+  --web-port 8765
+```
+
+`--web-host` 只接受 `127.0.0.1`、私网 IPv4 或 `0.0.0.0`；非 loopback bind 必须声明私网 allowed host，绑定某个具体私网 IP 时该地址也必须在白名单内。`--web-allowed-host` 可重复，拒绝 `*`、`0.0.0.0`、公网、组播、保留地址和非 IP 文本。TrustedHost 始终保留 `127.0.0.1/localhost/[::1]`，再追加显式白名单。两种模式均使用单 worker、关闭 proxy headers；`waveform-root` 未指定时使用 `<exchange-root>/waveforms`。
 
 FastAPI 提供原生 HTML/CSS/JavaScript 单页，不需要 Node 构建链。Web 进程和文件入口共享一个 `FileCommandService`、一个 `FileCommandProcessor`、一个普通命令 worker 和同一 stop latch；不能分别创建 Web worker 后并发调用 controller。
 
@@ -78,9 +90,9 @@ session/SSE 不包含完整 `x/y/z`。最多返回最近 256 条轻量迭代摘�
 
 run 结果下载在整个 ASGI response 生命周期内持有 `RunStore.export_guard()`；即使发送 response header 时失败，也会释放 guard。run 与 outbox 下载均从启动时锚定的目录描述符以 `O_NOFOLLOW` 打开普通文件，校验和流式发送复用同一文件描述符，避免路径检查后被替换。
 
-## 5. 请求和本机安全
+## 5. 请求和可信网络安全
 
-服务不启用 CORS，并使用 `TrustedHostMiddleware` 只接受 loopback Host。所有修改请求必须同时满足：
+服务不启用 CORS，并使用 `TrustedHostMiddleware` 只接受 loopback 和显式私网 Host。所有修改请求必须同时满足：
 
 - `Content-Type: application/json`；
 - `X-Remote-DPD-Request: 1` 自定义头；
@@ -92,7 +104,7 @@ run 结果下载在整个 ASGI response 生命周期内持有 `RunStore.export_g
 
 Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间不超过 60 秒、设备调用超时不超过 300 秒、ILC 最大迭代不超过 1000、PA 系数不超过 256 项、阶数不超过 99、记忆延迟不超过 4096。controller 进一步限制每轮反馈总抓取不超过 1000 万样点、保留轮次乘参考长度不超过 2000 万样点；设备 schema 和数字安全仍是最终业务校验者。
 
-所有响应设置 no-sniff、no-referrer、DENY frame 和只允许同源脚本/样式/连接的 CSP；API 和下载使用 `Cache-Control: no-store`。本安全边界只适用于可信本机操作，不等价于公网部署加固。
+所有响应设置 no-sniff、no-referrer、DENY frame 和只允许同源脚本/样式/连接的 CSP；API 和下载使用 `Cache-Control: no-store`。LAN 模式仍为无鉴权明文 HTTP，能访问端口的可信主机可以控制 RF 和下载结果；应用不自动修改防火墙。本安全边界只适用于本机或可信单用户局域网，不等价于公网部署加固。
 
 ## 6. 页面交互
 

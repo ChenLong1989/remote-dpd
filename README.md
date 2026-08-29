@@ -8,7 +8,7 @@
 - 分步或自动的单任务闭环控制器；
 - 自动清理的完整临时运行记录和最终 MAT 正式结果；
 - 版本化 inbox/outbox MAT 文件命令入口；
-- 与文件入口共享单任务仲裁的本机 Web 控制台。
+- 与文件入口共享单任务仲裁的可信网络 Web 控制台。
 
 当前唯一内置设备是 `simulated`。真实仪器适配器可通过相同设备注册表逐个增加；Web 页面按设备 schema 动态生成专属配置，因此后续真实设备不需要复制控制台流程。
 
@@ -37,9 +37,9 @@ remote-dpd \
 remote-dpd --exchange-root /tmp/remote-dpd-exchange --once
 ```
 
-## 本机 Web 控制台
+## Web 控制台
 
-Web 模式固定监听 `127.0.0.1`，同时保留同一进程的 MAT inbox watcher：
+Web 模式默认只监听 `127.0.0.1`，同时保留同一进程的 MAT inbox watcher：
 
 ```bash
 remote-dpd \
@@ -57,7 +57,21 @@ remote-dpd \
 - safety stop、controller 状态、功率轨迹、每轮 NMSE/RMS/峰值/时延/相位和抽样波形；
 - 临时 run、结构化事件和最终 MAT 下载。
 
-Web 与外部 MAT 命令共用同一个普通命令 worker 和 stop latch，任一入口繁忙时另一入口不会绕过单任务边界。控制台没有登录鉴权，其安全边界仅为固定 loopback、Host/Origin/JSON 校验和 CSP，不支持反向代理或公网部署。完整契约见 [`docs/web_console_design.md`](docs/web_console_design.md)。`--once` 只适用于默认 `file` 模式。
+可信局域网可显式启动：
+
+```bash
+remote-dpd \
+  --exchange-root /tmp/remote-dpd-exchange \
+  --mode web \
+  --waveform-root /data/dpd-waveforms \
+  --web-host 0.0.0.0 \
+  --web-allowed-host 192.168.3.100 \
+  --web-port 8765
+```
+
+此时从 `http://192.168.3.100:8765/` 访问。非 loopback bind 必须显式提供至少一个私网 `--web-allowed-host`；参数可重复，通配符和公网地址被拒绝。loopback Host 始终保留。
+
+Web 与外部 MAT 命令共用同一个普通命令 worker 和 stop latch，任一入口繁忙时另一入口不会绕过单任务边界。控制台没有登录鉴权或 TLS；可信 LAN 内能访问端口的主机可以控制 RF 任务和下载结果，因此不得用于不可信网络、反向代理或公网部署。服务保留精确 Host、同源 Origin、JSON、自定义控制头和 CSP 校验，不启用 CORS，也不自动修改系统防火墙。完整契约见 [`docs/web_console_design.md`](docs/web_console_design.md)。`--once` 只适用于默认 `file` 模式。
 
 ## 文件命令入口
 

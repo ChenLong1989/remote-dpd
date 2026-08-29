@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-设备直控重构的四个阶段已经完成：设备能力、反馈预处理、DPD runtime、数字安全、仿真 RF bench、功率控制、单任务闭环、临时存储、正式结果、新文件协议和本机 Web 控制台均已实现。当前只有 `simulated` 设备，真实仪器适配器仍按需增加。
+设备直控重构的四个阶段已经完成：设备能力、反馈预处理、DPD runtime、数字安全、仿真 RF bench、功率控制、单任务闭环、临时存储、正式结果、新文件协议和可信网络 Web 控制台均已实现。当前只有 `simulated` 设备，真实仪器适配器仍按需增加。
 
 ## 使用与消费
 
@@ -20,7 +20,7 @@
 - [`controller_design.md`](controller_design.md)：初始功率调节、分步/自动闭环、状态机、停止与安全收尾。
 - [`storage_design.md`](storage_design.md)：完整临时运行记录、保留清理和最终 MAT 结果。
 - [`file_interface_design.md`](file_interface_design.md)：新 MAT 命令、状态、幂等、并发和重启扫描契约。
-- [`web_console_design.md`](web_console_design.md)：本机 FastAPI、受限 waveform 浏览、共享命令仲裁、REST/SSE、动态表单和页面交互。
+- [`web_console_design.md`](web_console_design.md)：本机/可信 LAN FastAPI、受限 waveform 浏览、共享命令仲裁、REST/SSE、动态表单和页面交互。
 
 ## 协作与 provenance
 

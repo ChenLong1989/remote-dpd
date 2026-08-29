@@ -171,6 +171,54 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(page.headers["x-frame-options"], "DENY")
         self.assertNotIn("access-control-allow-origin", health.headers)
 
+    def test_explicit_lan_host_is_allowed_and_other_hosts_remain_rejected(self):
+        lan_app = create_web_app(
+            command_service=self.service,
+            run_store=self.store,
+            waveform_root=self.waveform_root,
+            allowed_hosts=["192.168.3.100"],
+        )
+        with TestClient(
+            lan_app,
+            base_url="http://192.168.3.100:8765",
+        ) as lan_client:
+            health = lan_client.get("/api/v1/health")
+            accepted = lan_client.post(
+                "/api/v1/commands",
+                json={"action": "reset", "request_id": "lan-reset"},
+                headers={
+                    CONTROL_HEADER: "1",
+                    "Origin": "http://192.168.3.100:8765",
+                },
+            )
+            wrong_host = lan_client.get(
+                "/api/v1/health",
+                headers={"Host": "192.168.3.101:8765"},
+            )
+            wrong_origin = lan_client.post(
+                "/api/v1/commands",
+                json={"action": "reset"},
+                headers={
+                    CONTROL_HEADER: "1",
+                    "Origin": "http://192.168.3.101:8765",
+                },
+            )
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(accepted.status_code, 202)
+        self.assertEqual(wrong_host.status_code, 400)
+        self.assertEqual(wrong_origin.status_code, 403)
+
+    def test_web_app_rejects_unsafe_additional_hosts(self):
+        for host in ("*", "0.0.0.0", "8.8.8.8", "bad host"):
+            with self.subTest(host=host), self.assertRaises((TypeError, ValueError)):
+                create_web_app(
+                    command_service=self.service,
+                    run_store=self.store,
+                    waveform_root=self.waveform_root,
+                    allowed_hosts=[host],
+                )
+
     def test_control_requests_enforce_host_origin_header_json_and_size(self):
         payload = {"action": "reset"}
 

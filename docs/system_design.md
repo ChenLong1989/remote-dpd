@@ -10,7 +10,7 @@
 
 - 只内置基础 ILC，更新式为 `y_next = y_current - mu * (z_current - x)`。
 - 只内置 `simulated` 设备；真实一体式或分立仪器适配器按需注册。
-- 对外常驻入口可选择版本化 inbox/outbox MAT 命令服务或本机 Web 控制台；Web 模式同进程保留 MAT watcher。
+- 对外常驻入口可选择版本化 inbox/outbox MAT 命令服务或可信网络 Web 控制台；Web 模式同进程保留 MAT watcher。
 - 一次只运行一个非 stop 命令和一个闭环任务；不恢复未完成的硬件会话，不提供多用户或设备并行。
 - 任务完整历史保存为自动清理的临时 artifact；正式 MAT 只保存最终 `x/y/z` 和最终指标。
 - 不兼容旧 `Config_file.mat`、`DPD_in.mat`、`FB_Signal.mat`、ACK、心跳、`safeBack` 或特殊十段输出协议。
@@ -25,7 +25,7 @@
 | SciPy `>=1.10` | MAT v5/v6/v7 加载和原子结果写入 |
 | watchdog `>=3.0` | inbox 创建/原子移动事件监听 |
 | FastAPI `>=0.135,<1` | 本机 REST/SSE、静态控制台和严格请求边界 |
-| uvicorn `>=0.30,<1` | 固定 loopback、单 worker 的 Web ASGI 服务 |
+| uvicorn `>=0.30,<1` | 默认 loopback、可显式可信 LAN、单 worker 的 Web ASGI 服务 |
 | h5py（可选） | MAT v7.3/HDF5 的有限顶层 dataset 回退 |
 
 项目不再依赖 PyTorch、MATLAB Engine、MATLAB Runtime 或 MATLAB License。
@@ -50,7 +50,9 @@ remote-dpd --exchange-root /opt/remote-dpd/exchange
 | `--runtime-root` | `<exchange-root>/runtime` | 临时运行存储根 |
 | `--mode` | `file` | `file` MAT 常驻模式或 `web` 本机控制台模式 |
 | `--waveform-root` | `<exchange-root>/waveforms` | Web 可浏览 waveform 根 |
-| `--web-port` | `8000` | 固定 `127.0.0.1` 上的 Web 端口 |
+| `--web-host` | `127.0.0.1` | IPv4 bind；可信 LAN 显式使用 `0.0.0.0` |
+| `--web-allowed-host` | 空 | 可重复的精确私网 Host 白名单；非 loopback bind 必填 |
+| `--web-port` | `8000` | Web 端口 |
 | `--retention-days` | `7` | 临时 run 保留天数 |
 | `--cleanup-interval-seconds` | `86400` | 周期清理间隔 |
 | `--status-poll-seconds` | `0.02` | 自动 run 状态轮询间隔 |
@@ -106,7 +108,7 @@ flowchart LR
 | `file_interface.py` | 新 MAT 命令/状态、幂等、busy、stop、watchdog 和启动扫描 |
 | `waveforms.py` | 锚定目录描述符的安全 waveform 浏览、MAT `x` 校验和有界 preview |
 | `web_bridge.py` | Web 命令到共享文件仲裁器的映射、状态/metrics/run DTO 和抽样 |
-| `web.py` / `web_static/` | loopback FastAPI、REST/SSE、安全中间件和原生单页控制台 |
+| `web.py` / `web_static/` | 可信网络 FastAPI、REST/SSE、安全中间件和原生单页控制台 |
 | `cli.py` | file/web 模式参数、RunStore/FileCommandService/uvicorn 生命周期 |
 | `exceptions.py` | 通用 MAT 错误层次 |
 
@@ -190,13 +192,13 @@ runtime step
 
 完整字段和 JSON 特殊类型见 `docs/file_interface_design.md`。
 
-## 10. 本机 Web 控制台
+## 10. Web 控制台
 
-Web 模式固定使用 `127.0.0.1` 和一个 uvicorn worker，不提供公网 host 参数。FastAPI 与文件 watcher 共享同一 `FileCommandService`，Web 普通命令通过原子持久命令进入同一 busy 锁和 worker；Web/file 任一入口的 stop 都旁路 worker 使用同一 processor latch。Web safety stop 还会在等待普通命令持久化锁前设置独立 barrier，避免大 MAT 序列化延迟停发，因此两个入口不能并行驱动设备。
+Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配置精确私网 Host 白名单；通配符、公网地址和未声明 Host 均拒绝。两种模式都只使用一个 uvicorn worker并关闭 proxy headers。FastAPI 与文件 watcher 共享同一 `FileCommandService`，Web 普通命令通过原子持久命令进入同一 busy 锁和 worker；Web/file 任一入口的 stop 都旁路 worker 使用同一 processor latch。Web safety stop 还会在等待普通命令持久化锁前设置独立 barrier，避免大 MAT 序列化延迟停发，因此两个入口不能并行驱动设备。
 
 `WaveformRepository` 使用 root directory fd、`dir_fd` 和 `O_NOFOLLOW` 浏览/打开文件，只返回相对路径并拒绝所有 symlink、路径逃逸和非普通文件。加载时只接受通过文件/样点上限、类型、finite、非零 RMS 和 `0 dBFS` 安全检查的 MAT 变量 `x`。
 
-修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback。页面按设备 schema 生成配置和 PA 系数编辑，提供分步/自动闭环、stop、状态/指标/有界波形、run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
+修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供分步/自动闭环、stop、状态/指标/有界波形、run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
 
 ## 11. MAT 边界
 
@@ -211,7 +213,7 @@ Web 模式固定使用 `127.0.0.1` 和一个 uvicorn worker，不提供公网 ho
 - 输入目录只接受直接普通文件；run 存储拒绝符号链接和根目录替换。
 - waveform root 只接受锚定目录下的真实目录和普通 MAT 文件；Web 不暴露绝对本地路径。
 - controller 在配置/参考生效前限制每轮总抓取为 1000 万样点、参考长度乘保留轮数为 2000 万样点；Web 的 session、iteration preview 和 run detail 均使用独立递归输出预算。
-- Web 模式无鉴权仅以 loopback、Host/Origin、非 simple JSON 请求和 CSP 为边界，不构成公网安全部署。
+- Web 模式无鉴权且无 TLS，仅以网络可信、精确 Host、同源 Origin、非 simple JSON 请求和 CSP 为应用边界；LAN 可达性不构成公网安全部署能力。
 - 设备调用超时限制停止延迟；功率稳定等待也可能延迟取消检查。
 - 用户自定义 PA 系数或 `mu` 不保证收敛，只有默认预设具备回归保证。
 - 周期相关可能对高度重复波形产生多个相似峰；当前记录诊断但不做异常段剔除。
