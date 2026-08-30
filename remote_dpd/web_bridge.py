@@ -31,8 +31,14 @@ from .file_interface import (
     parse_configuration_json,
 )
 from .protocol import load_mat, save_mat
-from .storage import RunNotFoundError, RunStore
+from .storage import RunNotFoundError, RunStorageError, RunStore
 from .waveforms import MAX_PREVIEW_POINTS, WaveformRepository
+from .web_analysis import (
+    AnalysisRecord,
+    AnalysisRequest,
+    RFAnalysisEngine,
+    WebAnalysisError,
+)
 
 WEB_COMMAND_ACTIONS = frozenset(COMMAND_ACTIONS - {"stop"})
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
@@ -78,6 +84,7 @@ class WebCommandBridge:
         command_service: FileCommandService,
         run_store: RunStore,
         waveforms: WaveformRepository,
+        analysis_engine: RFAnalysisEngine | None = None,
     ) -> None:
         self._service = command_service
         self._store = run_store
@@ -87,6 +94,7 @@ class WebCommandBridge:
         self._ordering_lock = threading.Lock()
         self._stop_epoch = 0
         self._known_actions: dict[str, str] = {}
+        self._analysis = analysis_engine or RFAnalysisEngine()
 
     @property
     def command_service(self) -> FileCommandService:
@@ -409,6 +417,115 @@ class WebCommandBridge:
             "error": (None if z is None else _complex_preview((z - x)[indices])),
         }
 
+    def current_analysis(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Analyze the immutable current snapshot without changing controller state."""
+        request = AnalysisRequest.from_payload(payload)
+        snapshot = self._service.processor.snapshot()
+        if snapshot is None or snapshot.x is None:
+            raise WebAnalysisError(
+                "reference_missing",
+                "no reference waveform is loaded",
+                status_code=409,
+            )
+        if snapshot.config is None:
+            raise WebAnalysisError(
+                "analysis_configuration_missing",
+                "apply an RF configuration before requesting frequency analysis",
+                status_code=409,
+            )
+        baseline_record = _select_live_record(
+            snapshot.records,
+            request.baseline_iteration,
+            default="first",
+        )
+        target_record = _select_live_record(
+            snapshot.records,
+            request.target_iteration,
+            default="last",
+        )
+        baseline = _live_analysis_record(baseline_record)
+        target = _live_analysis_record(target_record)
+        config = snapshot.config.device_config
+        source_key = (
+            "session",
+            self._service.processor.run_id,
+            id(snapshot.x),
+            None if baseline_record is None else id(baseline_record.z),
+            None if target_record is None else id(target_record.z),
+        )
+        return self._analysis.analyze(
+            source_key=source_key,
+            request=request,
+            reference=snapshot.x,
+            baseline=baseline,
+            target=target,
+            sample_rate_hz=config.sample_rate_hz,
+            center_frequency_hz=config.center_frequency_hz,
+        )
+
+    def run_analysis(
+        self,
+        run_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Analyze two immutable stored iterations while holding cleanup protection."""
+        request = AnalysisRequest.from_payload(payload)
+        try:
+            with self._store.active_run(run_id) as recorder:
+                manifest = recorder.read_manifest()
+                iterations = tuple(
+                    int(item["iteration"]) for item in manifest["iterations"]
+                )
+                if not iterations:
+                    raise WebAnalysisError(
+                        "analysis_iterations_missing",
+                        "run has no evaluated iterations",
+                        status_code=409,
+                    )
+                baseline_iteration = _select_stored_iteration(
+                    iterations,
+                    request.baseline_iteration,
+                    default="first",
+                )
+                target_iteration = _select_stored_iteration(
+                    iterations,
+                    request.target_iteration,
+                    default="last",
+                )
+                reference = recorder.read_reference()
+                baseline_stored = recorder.read_iteration(baseline_iteration)
+                target_stored = (
+                    baseline_stored
+                    if target_iteration == baseline_iteration
+                    else recorder.read_iteration(target_iteration)
+                )
+                config = recorder.read_config()
+                sample_rate_hz, center_frequency_hz = _stored_rf_configuration(config)
+                baseline = _stored_analysis_record(baseline_stored)
+                target = _stored_analysis_record(target_stored)
+                return self._analysis.analyze(
+                    source_key=(
+                        "run",
+                        run_id,
+                        baseline_iteration,
+                        target_iteration,
+                    ),
+                    request=request,
+                    reference=reference,
+                    baseline=baseline,
+                    target=target,
+                    sample_rate_hz=sample_rate_hz,
+                    center_frequency_hz=center_frequency_hz,
+                )
+        except WebAnalysisError:
+            raise
+        except (RunNotFoundError, RunStorageError, TypeError, ValueError) as exc:
+            raise WebAnalysisError(
+                "run_not_found",
+                "temporary run or requested iteration was not found",
+                status_code=404,
+            ) from exc
+
     def status_payload(
         self,
         status: CommandStatus,
@@ -451,6 +568,113 @@ class WebCommandBridge:
         return str(array.reshape(-1)[0]) if array.size == 1 else "unknown"
 
 
+def _select_live_record(
+    records: tuple[IterationRecord, ...],
+    requested: int | None,
+    *,
+    default: str,
+) -> IterationRecord | None:
+    if requested is None:
+        if not records:
+            return None
+        return records[0] if default == "first" else records[-1]
+    record = next((item for item in records if item.iteration == requested), None)
+    if record is None:
+        raise WebAnalysisError(
+            "analysis_iteration_not_found",
+            f"iteration {requested} is not available in the current session",
+            status_code=404,
+        )
+    return record
+
+
+def _select_stored_iteration(
+    iterations: tuple[int, ...],
+    requested: int | None,
+    *,
+    default: str,
+) -> int:
+    selected = (
+        (iterations[0] if default == "first" else iterations[-1])
+        if requested is None
+        else requested
+    )
+    if selected not in iterations:
+        raise WebAnalysisError(
+            "analysis_iteration_not_found",
+            f"iteration {selected} is not stored for this run",
+            status_code=404,
+        )
+    return selected
+
+
+def _live_analysis_record(record: IterationRecord | None) -> AnalysisRecord | None:
+    if record is None:
+        return None
+    return AnalysisRecord(
+        iteration=record.iteration,
+        y=record.y,
+        z=record.z,
+        power_dbm=record.power_dbm,
+        attenuation_db=record.attenuation_db,
+        nmse_db=record.preprocessing.nmse_db,
+    )
+
+
+def _stored_analysis_record(stored: Mapping[str, Any]) -> AnalysisRecord:
+    metadata = stored.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise RunStorageError("iteration metadata must be a JSON object")
+    preprocessing = metadata.get("preprocessing")
+    nmse_db = (
+        preprocessing.get("nmse_db") if isinstance(preprocessing, Mapping) else None
+    )
+    return AnalysisRecord(
+        iteration=_trusted_integer(metadata.get("iteration"), "iteration"),
+        y=stored["y"],
+        z=stored["z"],
+        power_dbm=_trusted_optional_number(metadata.get("power_dbm"), "power_dbm"),
+        attenuation_db=_trusted_optional_number(
+            metadata.get("attenuation_db"), "attenuation_db"
+        ),
+        nmse_db=_trusted_optional_number(nmse_db, "nmse_db"),
+    )
+
+
+def _stored_rf_configuration(config: Mapping[str, Any]) -> tuple[float, float]:
+    device_config = config.get("device_config")
+    if not isinstance(device_config, Mapping):
+        raise RunStorageError("stored run is missing device_config")
+    sample_rate_hz = _trusted_number(
+        device_config.get("sample_rate_hz"), "sample_rate_hz"
+    )
+    center_frequency_hz = _trusted_number(
+        device_config.get("center_frequency_hz"), "center_frequency_hz"
+    )
+    if sample_rate_hz <= 0.0 or center_frequency_hz <= 0.0:
+        raise RunStorageError("stored RF frequencies must be positive")
+    return sample_rate_hz, center_frequency_hz
+
+
+def _trusted_integer(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RunStorageError(f"stored {name} must be a non-negative integer")
+    return value
+
+
+def _trusted_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RunStorageError(f"stored {name} must be a number")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise RunStorageError(f"stored {name} must be finite")
+    return normalized
+
+
+def _trusted_optional_number(value: Any, name: str) -> float | None:
+    return None if value is None else _trusted_number(value, name)
+
+
 def snapshot_payload(snapshot: ControllerSnapshot) -> dict[str, Any]:
     """Serialize controller metadata without copying full waveform history."""
     selected_records = snapshot.records[-_SESSION_RECORD_LIMIT:]
@@ -461,6 +685,16 @@ def snapshot_payload(snapshot: ControllerSnapshot) -> dict[str, Any]:
         )
         for index, record in enumerate(selected_records)
     ]
+    rf_config = None
+    if snapshot.config is not None:
+        common = snapshot.config.device_config
+        rf_config = {
+            "center_frequency_hz": _finite_or_none(common.center_frequency_hz),
+            "sample_rate_hz": _finite_or_none(common.sample_rate_hz),
+            "target_power_dbm": _finite_or_none(common.target_power_dbm),
+            "safety_power_limit_dbm": _finite_or_none(common.safety_power_limit_dbm),
+            "average_segment_count": common.average_segment_count,
+        }
     return {
         "state": snapshot.state.value,
         "device_type": snapshot.device_type,
@@ -478,6 +712,7 @@ def snapshot_payload(snapshot: ControllerSnapshot) -> dict[str, Any]:
         "completed_at": snapshot.completed_at,
         "reference_sample_count": None if snapshot.x is None else int(snapshot.x.size),
         "record_count": len(snapshot.records),
+        "rf_config": rf_config,
         "records": records,
         "power_trace_count": len(snapshot.power_trace),
         "power_trace": [

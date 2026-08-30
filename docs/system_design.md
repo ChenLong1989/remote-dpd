@@ -107,6 +107,7 @@ flowchart LR
 | `protocol.py` | 通用 MAT 加载和原子保存 helper |
 | `file_interface.py` | 新 MAT 命令/状态、幂等、busy、stop、watchdog 和启动扫描 |
 | `waveforms.py` | 锚定目录描述符的安全 waveform 浏览、MAT `x` 校验和有界 preview |
+| `web_analysis.py` | 完整周期频谱、measurement-band/ACLR/PAPR、AM/AM/AM/PM 和有界分析缓存 |
 | `web_bridge.py` | Web 命令到共享文件仲裁器的映射、状态/metrics/run DTO 和抽样 |
 | `web.py` / `web_static/` | 可信网络 FastAPI、REST/SSE、安全中间件和原生单页控制台 |
 | `cli.py` | file/web 模式参数、RunStore/FileCommandService/uvicorn 生命周期 |
@@ -198,7 +199,15 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 
 `WaveformRepository` 使用 root directory fd、`dir_fd` 和 `O_NOFOLLOW` 浏览/打开文件，只返回相对路径并拒绝所有 symlink、路径逃逸和非普通文件。加载时只接受通过文件/样点上限、类型、finite、非零 RMS 和 `0 dBFS` 安全检查的 MAT 变量 `x`。
 
-修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供分步/自动闭环、stop、状态/指标/有界波形、run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
+修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供 R&S 风格 Operate/Configuration/Analysis/Runs 工作区、自动与 Expert 分步控制、固定 RF abort、完整周期有界分析、历史 run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
+
+### Web 射频分析边界
+
+独立只读的 Web 射频分析层从当前 controller snapshot 或 cleanup guard 内的历史 `RunStore` 读取不可变 `x/y/z`，计算完整周期频谱、measurement-band 功率、ACLR、PAPR 以及有界 AM/AM、AM/PM 数据；它不属于 controller、预处理器或 DPD runtime，不持有设备对象，也不能改变 RF、命令、run manifest 或正式结果。
+
+`AnalysisProfile` 是逐请求提交的版本化 Web 查询，包含相对/绝对频率显示和任意有界 measurement-band 表；它不写入原 waveform MAT、文件命令 schema、controller 配置或正式结果 MAT，也不提供跨会话 preset。频谱使用 `dBFS/bin`，物理总功率继续来自 power sensor `dBm`，在没有校准 IQ 标度时不得推导 `dBm/Hz`。EVM、连续扫频、RBW/VBW 和频谱 mask 不在当前范围。
+
+分析计算与普通命令 worker、事件循环和 safety-stop barrier 隔离，使用单并发 gate、逐 trace 中间数组释放、有界结果缓存和独立输入/输出预算。分析端点即使使用 `POST` 承载结构化 profile 也保持语义只读，并继续执行现有 Host/Origin/JSON/自定义头/no-store 安全边界。任何分析错误或资源拒绝只影响该响应，不能阻塞或改变控制链。详细数值、UI 和 API 草案见 `docs/web_console_design.md`。
 
 ## 11. MAT 边界
 
@@ -230,7 +239,9 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 - 最终 MAT 字段、列向量、实际配置、最终轮选择和原子失败；
 - 文件命令解析、分步/自动运行、busy、stop、幂等、启动扫描、原子状态、提交窗口故障注入和结果补交。
 - waveform traversal/symlink/root 替换/FIFO/MAT 类型/数字安全/规模上限；
-- Web Host/Origin/Content-Type/控制头/body/JSON、动态设备 schema、分步/自动命令、跨 Web/file busy 与 stop、run 浏览/preview/download 和浏览器响应式端到端。
+- Web Host/Origin/Content-Type/控制头/body/JSON、动态设备 schema、分步/自动命令、跨 Web/file busy 与 stop、run 浏览/preview/download；
+- 完整周期 DFT、Parseval、Nyquist/band 边界、ACLR 符号、PAPR、AM/AM/AM/PM、分析资源预算和只读 session/run API；
+- R&S 风格四工作区、RF 状态/abort、trace/marker、measurement-band、历史重分析和 `1920×1080`/`1366×768` 浏览器端到端。
 
 当前尚未实现：
 

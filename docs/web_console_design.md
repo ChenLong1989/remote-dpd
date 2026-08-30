@@ -1,6 +1,6 @@
 # 可信网络 Web 控制台设计
 
-本文描述 `remote_dpd/web.py`、`remote_dpd/web_bridge.py`、`remote_dpd/waveforms.py` 和 `remote_dpd/web_static/` 的当前实现。控制台面向本机或可信单用户局域网操作，不提供登录、多用户、远程公网或多设备并行能力。
+本文描述 `remote_dpd/web.py`、`remote_dpd/web_bridge.py`、`remote_dpd/web_analysis.py`、`remote_dpd/waveforms.py` 和 `remote_dpd/web_static/` 的当前实现。控制台面向本机或可信单用户局域网操作，不提供登录、多用户、远程公网或多设备并行能力。
 
 ## 1. 启动和部署边界
 
@@ -73,6 +73,7 @@ External MAT producer ─────────────┘                
 | `GET /health` | 进程健康，不返回本地绝对路径 |
 | `GET /session` | 当前 active command、run 和有界 controller/metrics 元数据 |
 | `GET /session/preview` | 当前 `x/y/z/error` 的有界抽样 |
+| `POST /session/analysis` | 对当前不可变 snapshot 执行只读完整周期 RF 分析 |
 | `GET /devices` | 注册设备、动态专属 schema 和公共默认配置 |
 | `GET /waveforms` | 受限目录浏览 |
 | `GET /waveforms/preview` | 安全报告和 `x` 抽样 |
@@ -83,10 +84,11 @@ External MAT producer ─────────────┘                
 | `GET /runs` | 有界临时 run 摘要 |
 | `GET /runs/{id}` | 配置、snapshot、功率轨迹和结构化事件 |
 | `GET /runs/{id}/iterations/{n}/preview` | 有界迭代 `x/y/z/error` 抽样和诊断 |
+| `POST /runs/{id}/analysis` | 在 cleanup guard 内对指定历史轮次执行只读 RF 分析 |
 | `GET /runs/{id}/result.mat` | 在完整 export guard 内流式下载正式结果 |
 | `GET /results/{command_id}.mat` | 下载 Web/file export 命令生成的正式结果 |
 
-session/SSE 不包含完整 `x/y/z`。最多返回最近 256 条轻量迭代摘要和最近 256 个功率调节点；只有最新一轮附带前 8 个 batch、每 batch 前 8 个 segment 以及递归受限的 runtime metrics。run detail 的 config、snapshot、events 和 iteration 索引也分别使用递归节点预算及截断标记，单轮 preview metadata 使用独立预算。完整波形只能通过有界 preview 获取。最多允许 8 个 SSE 客户端，断开只释放订阅，不会隐式停止任务。
+session/SSE 不包含完整 `x/y/z`。最多返回最近 256 条轻量迭代摘要和最近 256 个功率调节点；只有最新一轮附带前 8 个 batch、每 batch 前 8 个 segment 以及递归受限的 runtime metrics。run detail 的 config、snapshot、events 和 iteration 索引也分别使用递归节点预算及截断标记，单轮 preview metadata 使用独立预算。完整波形不经 Web 返回；preview 只返回有界时域抽样，analysis 在服务端读取完整波形并只返回有界频谱和汇总结果。最多允许 8 个 SSE 客户端，断开只释放订阅，不会隐式停止任务。
 
 run 结果下载在整个 ASGI response 生命周期内持有 `RunStore.export_guard()`；即使发送 response header 时失败，也会释放 guard。run 与 outbox 下载均从启动时锚定的目录描述符以 `O_NOFOLLOW` 打开普通文件，校验和流式发送复用同一文件描述符，避免路径检查后被替换。
 
@@ -108,21 +110,107 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 ## 6. 页面交互
 
-单页控制台包括：
+单页控制台使用 `OPERATE`、`CONFIGURATION`、`DPD ANALYSIS` 和 `RUNS` 四个工作区。persistent instrument header 和 channel bar 持续显示 bench、TX/RX/PWR 连接、Controller、Run、RF Output、频率、采样率、功率、衰减与迭代；固定位置的 `RF OFF / ABORT` 继续调用独立 safety-stop 端点。
 
-- waveform 目录递归浏览、样点数/峰值/RMS preview 和选择；
-- 设备注册表选择、公共 RF/功率/衰减/抓取/通道/触发配置；
-- 根据设备 schema 动态生成 string/integer/number/boolean/enum/array/object 字段；
-- 仿真 PA 系数逐行添加、删除和编辑 `p/m/real/imag`；
-- 一键自动闭环，以及 connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 和 safety stop；
-- controller 状态、轮次、功率、锁定衰减、固定增益、NMSE、数字 RMS/峰值、时延、相位和功率调节轨迹；
-- Canvas 绘制的有界 `x/y/z` 包络和 NMSE 历史；
-- 临时 run 列表、配置/snapshot/结构化事件 inspector 和正式 MAT 下载。
+`OPERATE` 以 `Z₀/Zₙ` 完整周期频谱和 DPD measurement results 为中心，自动闭环为主操作，原 connect/disconnect/load/configure/start/stop TX/power tune/calibrate/step/reset/export 保留在 Expert Manual Control。`CONFIGURATION` 按信号源、功率安全、DPD runtime、Analysis Profile 和 Simulation DUT 分组。`DPD ANALYSIS` 提供频谱、AM/AM、AM/PM 和 alignment MultiView。`RUNS` 提供历史迭代重分析、配置/snapshot/结构化事件和正式 MAT 下载。
 
-页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，避免页面提交明显非法顺序；服务端仍独立执行完整互斥和状态校验。
+页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，推荐下一步只作为 UI 引导；服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set、相对/绝对频率和窗口放大，不引入 Node 构建链或外部 CDN。
 
 ## 7. 生命周期和限制
 
 启动顺序为 RunStore cleanup、共享 FileCommandService watcher、FastAPI；关闭顺序为停止 HTTP 接入、停止 watcher、取消 active/pending controller、等待唯一 worker、停止命令间仍在发射的 RF、关闭 processor 和 RunStore。uvicorn graceful shutdown 最多等待 10 秒，避免长期 SSE 客户端使本机进程无法退出。
 
 当前结构化 `events.json` 作为 run 日志展示，不新增任意路径文本日志。功率调节轨迹由 controller 在调节完成或失败后一次性提交，因此页面不会保证逐测量点实时动画；最终完整轨迹仍会显示。未完成硬件任务在重启后不恢复，只按已有持久证据安全收敛。
+
+## 8. 专业射频工作台与分析
+
+控制台以信号路径、RF 发射安全、频谱和 DPD 前后对比为中心；现有部署、安全、命令仲裁和设备控制边界保持不变。
+
+### 8.1 仪表工作区
+
+页面改为四个顶层 workspace：
+
+| Workspace | 主要职责 |
+| --- | --- |
+| `OPERATE` | 当前信号路径、RF 状态、推荐下一步、自动闭环、主频谱和核心结果 |
+| `CONFIGURATION` | Signal Source、Receiver/Capture、Power & Safety、DPD Runtime、Simulation DUT |
+| `DPD ANALYSIS` | Spectrum、AM/AM、AM/PM、Iteration Trend、Power Tune、Alignment、Time/IQ/Error |
+| `RUNS` | 历史 run、迭代选择、重新分析、结构化诊断和正式 MAT 下载 |
+
+所有 workspace 共用 persistent instrument header，持续显示 bench/device、连接状态、Controller、Run、RF Output、中心频率、采样率、功率、衰减和迭代；`RF OFF / ABORT` 始终位于固定位置。页面切换和 SSE 重连不得触发设备动作、清空尚未提交的配置或改变 RF 状态。
+
+`OPERATE` 顶部使用 `Waveform → DPD Runtime → TX → PA/DUT → RX → Alignment → Analysis` 信号路径 block diagram。每个 block 只显示系统真实状态并可跳转到对应配置或诊断；不模拟没有后端含义的硬件按键。自动闭环为默认 CTA，connect/load/configure/start/stop TX/power tune/calibrate/step/reset/export 保留在状态感知的 Expert Manual Control 中。
+
+### 8.2 R&S 参考视觉语言
+
+主监控区参考 R&S FSW 的频谱、channel bar、trace/marker 和 MultiView 信息结构；配置区参考 R&S SMW200A 的信号路径 block diagram。实现采用原创标识和布局，不复制 R&S 商标或产品面板：
+
+- 深灰仪表底色、黑色绘图区、清晰但低干扰的灰色 major/minor grid；
+- 主 trace 黄色，目标对比 trace 青色，其他 trace 使用有限且全局一致的颜色；绿色只表示 ready/pass，琥珀表示 warning/active RF，红色只表示 fault/abort 等高优先级状态；
+- 紧凑扁平控件、细分隔线、小圆角、工程数字等宽字体，不使用装饰性 glow、大面积渐变或营销式空白；
+- 主图必须具有刻度、单位、trace 名称、显示范围、marker readout、空数据/计算中/错误状态；窗口可以放大并恢复 MultiView；
+- 英文仪器术语为主，单位使用 SI 工程前缀；桌面首先适配 `1920×1080` 和 `1366×768`，窄屏允许 workspace 纵向降级但不得隐藏 RF 状态和 abort。
+
+### 8.3 Trace、频谱与单位
+
+主频谱默认比较第 0 轮反馈 `Z₀` 与当前或用户选择轮反馈 `Zₙ`，用于直接观察 DPD 前后的 PA 输出改善；`x` reference 和对应轮 `y` DPD drive 作为可选 trace。trace 标签必须写明逻辑含义和轮次，不能只显示单字母颜色图例。
+
+频谱基于完整周期的矩形窗 DFT，先 `fftshift` 再按采样率生成频率轴。归一化定义为 `X[k] / N`，单位幅度复正弦落在单个 DFT bin 时为 `0 dBFS/bin`；显示 `FFT Size=N` 和 `Bin BW=sample_rate/N`。相对模式以 baseband center 为 `0 Hz`，绝对模式在频率轴加有效中心频率。系统不把 Bin BW 标成 RBW，也不显示没有物理实现的 VBW、Sweep Time、Max Hold 或校准 `dBm/Hz`。
+
+服务端在任何显示压缩前完成 band power 积分；绘图 trace 使用保峰值的有界聚合，避免窄带 spur 被平均掉。归一化数字频谱与功率传感器 `power_dbm` 分别显示，后者只代表校准总输出功率，不用于推导每 bin `dBm`。
+
+### 8.4 Analysis Profile 与 measurement bands
+
+`AnalysisProfile` 是只读、版本化、逐请求提交的 Web 分析参数，不属于 RF 控制配置，不写入 waveform MAT、controller、文件命令、run manifest 或正式结果 MAT。本轮不提供 profile 的跨会话 Save/Recall；同一个 profile 可以应用到当前 session 或任意历史 run/iteration。
+
+profile 包含显示点数、相对/绝对频率模式和有界 measurement-band 表。每行包含：
+
+| 字段 | 约束与含义 |
+| --- | --- |
+| `label` | 非空、长度受限、在一次请求内唯一 |
+| `role` | `main`、`adjacent` 或 `other` |
+| `center_offset_hz` | 相对载波中心的有限频率 offset |
+| `integration_bandwidth_hz` | 正有限积分带宽 |
+| `enabled` | 是否参与绘图和积分 |
+
+页面默认创建 `Main`、`Adjacent L1`、`Adjacent R1`，允许增加 L2/R2、多载波和不对称 band。只有恰好一个启用的 main band 时才计算相对结果；每个 band 返回积分 `power_dbfs`，adjacent/other 同时返回 `relative_power_dbc = P_band - P_main`，adjacent 另返回正值 `aclr_db = P_main - P_band`。未配置、缺少 main 或没有 adjacent 时不猜测带宽，ACLR 标记为 unavailable，其他分析继续工作。
+
+band 区间不得越过 `[-sample_rate/2, sample_rate/2)`；边界与 DFT bin 不完全重合时按 bin 覆盖比例积分，避免仅用 bin center 导致宽度跳变。最大 band 数、label 长度、显示点数和嵌套节点均使用独立硬上限。
+
+### 8.5 DPD 分析结果
+
+- **NMSE**：继续使用预处理后 `z` 相对固定 reference `x` 的现有定义，展示第 0 轮、目标轮和改善量。
+- **PAPR**：按 `20*log10(peak/RMS)` 计算选定 `x/y/z` 数字波形；不从稀疏 preview 估计。
+- **AM/AM**：以同轮实际发射 `|y|` 为输入、已对齐且固定增益校正的 `|z|` 为输出，提供 output amplitude 与 normalized gain 视图。
+- **AM/PM**：以 `angle(z)-angle(y)` 的包裹相位差为纵轴，单位 degree；低于相对峰值门限的输入样点排除，防止近零相位支配结果。
+- **分箱**：第 0 轮和目标轮使用共同输入幅度 bin，返回中心统计量与离散范围，不向浏览器发送全量散点。完整 PAPR 仍使用全部样点；AM/AM、AM/PM 对超长波形使用等间隔确定性代表样点，最多 262144 点，并在响应中报告原始/分析样点数和 `sampled` 标记。
+- **Power Tune**：衰减为横轴、传感器功率为纵轴，绘制 target、允许误差区间和 safety limit；完整轨迹仍来自 controller 已记录事实。
+- **Alignment**：展示 delay、phase、fixed gain、batch/segment 计数和现有受限诊断；不改变预处理算法或增加异常段剔除。
+
+本阶段不实现调制识别、符号同步、raw/demod EVM、频谱 mask pass/fail、连续扫频或瀑布图。NMSE 不得重命名为 EVM。
+
+### 8.6 只读分析 API
+
+`POST /api/v1/session/analysis` 读取当前 session，`POST /api/v1/runs/{run_id}/analysis` 读取指定 run 的基线/目标 iteration。由于 profile 包含可编辑 band 表，入口使用 `POST` 承载结构化查询，但不改变服务端状态；它们仍满足现有同源 Origin、精确 Host、`application/json`、自定义控制头、body/JSON 深度与节点预算，并返回 `Cache-Control: no-store`。
+
+分析响应只包含：profile 摘要、基线/目标轮标识、频谱坐标与有界 trace、band 积分、ACLR/PAPR/NMSE 对比、AM/AM/AM/PM 分箱以及必要的 truncation/availability 标记。不得返回完整 `x/y/z`、绝对路径或未受限 runtime metadata。
+
+当前 session 从 controller snapshot 读取；历史分析在 `RunStore.active_run()`/cleanup guard 内读取不可变 reference 和 iteration。分析模块不得取得设备对象、调用 controller 变更方法或写入 run。历史 run 在读取或计算期间被清理时必须产生稳定错误，不得使用部分数据。
+
+### 8.7 资源、并发与安全
+
+完整周期 FFT 最多面对 1000 万 complex 样点，因此响应点数限制不足以约束计算资源。实现必须：
+
+- 在控制 worker 和事件循环之外执行数值计算，使用独立单并发分析 gate；已有分析占用 gate 时新请求立即返回 `429 analysis_busy`，不建立无界等待队列；
+- 逐 trace 执行 FFT、band 积分和显示压缩，随后立即释放全量频谱中间数组；
+- 以 run/session generation、iteration、trace 和 profile 指纹缓存有界最终结果，不缓存全量 FFT；当前最多缓存 16 项、总 JSON 预算 16 MiB；
+- 对输入样点、请求 band、trace、显示点和并发等待设置硬限制，客户端断开不能造成无限排队；
+- 保证 command、SSE/session polling 和 safety stop 不等待分析 gate；分析失败只影响分析响应，不改变 controller/run 状态。
+
+profile 最多包含 32 个 band、4 条 trace 和 4096 个频谱显示点。最大允许 waveform 仍为 1000 万 complex 样点；实现使用标量 bin 边界积分，避免为每个 band 建立整轴权重数组。完整频谱绝不从稀疏时域 preview 估计。
+
+### 8.8 兼容性与验收
+
+现有 REST 命令、SSE、preview、run detail、下载、文件入口、controller、正式 MAT 和可信 LAN 安全边界保持兼容。旧前端元素可以重构或移除，但所有动作必须继续通过 `WebCommandBridge`/独立 stop 端点，Analysis 代码不得复制闭环流程。
+
+验收覆盖数值定义、band 边界、资源上限、API 安全、状态到推荐动作、RF 状态/abort、SSE 重连、trace/marker/iteration、measurement-band 编辑、无 profile/失败 run 和浏览器 `1920×1080`/`1366×768` 端到端。

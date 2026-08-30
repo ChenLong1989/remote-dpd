@@ -28,6 +28,7 @@ from .file_interface import FileCommandError
 from .result_export import ResultExportError, load_final_payload_file
 from .storage import RunNotFoundError
 from .waveforms import WaveformAccessError, WaveformRepository
+from .web_analysis import WebAnalysisError
 from .web_bridge import WebBridgeError, WebCommandBridge
 
 if TYPE_CHECKING:
@@ -290,6 +291,10 @@ def create_web_app(
     async def bridge_error(_request: Request, exc: WebBridgeError) -> JSONResponse:
         return _error_response(exc.code, str(exc), exc.status_code)
 
+    @app.exception_handler(WebAnalysisError)
+    async def analysis_error(_request: Request, exc: WebAnalysisError) -> JSONResponse:
+        return _error_response(exc.code, str(exc), exc.status_code)
+
     @app.exception_handler(WaveformAccessError)
     async def waveform_error(
         _request: Request,
@@ -417,6 +422,11 @@ def create_web_app(
     async def current_preview(points: int = 1024) -> dict[str, Any]:
         return await run_in_threadpool(bridge.current_preview, points=points)
 
+    @app.post("/api/v1/session/analysis")
+    async def current_analysis(request: Request) -> dict[str, Any]:
+        payload = await _read_control_json(request)
+        return await run_in_threadpool(bridge.current_analysis, payload)
+
     @app.get("/api/v1/runs")
     async def runs(limit: int = 50) -> dict[str, Any]:
         return await run_in_threadpool(bridge.list_runs, limit=limit)
@@ -441,6 +451,11 @@ def create_web_app(
             iteration,
             points=points,
         )
+
+    @app.post("/api/v1/runs/{run_id}/analysis")
+    async def run_analysis(run_id: str, request: Request) -> dict[str, Any]:
+        payload = await _read_control_json(request)
+        return await run_in_threadpool(bridge.run_analysis, run_id, payload)
 
     @app.get("/api/v1/runs/{run_id}/result.mat")
     async def run_result(run_id: str) -> StreamingResponse:

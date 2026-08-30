@@ -8,7 +8,7 @@
 - 分步或自动的单任务闭环控制器；
 - 自动清理的完整临时运行记录和最终 MAT 正式结果；
 - 版本化 inbox/outbox MAT 文件命令入口；
-- 与文件入口共享单任务仲裁的可信网络 Web 控制台。
+- 与文件入口共享单任务仲裁、具备专业 RF 分析工作区的可信网络 Web 控制台。
 
 当前唯一内置设备是 `simulated`。真实仪器适配器可通过相同设备注册表逐个增加；Web 页面按设备 schema 动态生成专属配置，因此后续真实设备不需要复制控制台流程。
 
@@ -54,8 +54,9 @@ remote-dpd \
 - 受限 waveform root 内的 MAT `x` 浏览、安全 preview 和加载；
 - 公共设备配置、动态专属 schema 和仿真 PA 系数逐项编辑；
 - connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 分步操作和一键自动闭环；
-- safety stop、controller 状态、功率轨迹、每轮 NMSE/RMS/峰值/时延/相位和抽样波形；
-- 临时 run、结构化事件和最终 MAT 下载。
+- 固定 RF abort、controller/channel 状态、功率调节、对齐诊断和推荐下一步；
+- 完整周期 `Z₀/Zₙ` 频谱、Trace/Marker、measurement-band、ACLR、PAPR、AM/AM、AM/PM 和 NMSE 改善；
+- 临时 run、任意历史轮次重新分析、结构化事件和最终 MAT 下载。
 
 可信局域网可显式启动：
 
@@ -124,6 +125,6 @@ Web 与外部 MAT 命令共用同一个普通命令 worker 和 stop latch，任�
 - `controller.py`：分步/自动闭环、状态机、停止和安全收尾。
 - `storage.py` / `result_export.py`：临时记录、清理和最终 MAT。
 - `file_interface.py`：新 MAT 命令服务。
-- `waveforms.py` / `web_bridge.py` / `web.py`：安全 waveform repository、共享 Web 命令桥和 FastAPI 控制台。
+- `waveforms.py` / `web_analysis.py` / `web_bridge.py` / `web.py`：安全 waveform repository、完整周期 RF 分析、共享 Web 命令桥和 FastAPI 控制台。
 
 文档入口见 [`docs/README.md`](docs/README.md)。

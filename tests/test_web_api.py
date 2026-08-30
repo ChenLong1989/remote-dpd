@@ -66,6 +66,33 @@ def _configuration(sample_count=64, max_iterations=2):
     }
 
 
+def _analysis_profile(**overrides):
+    payload = {
+        "schema_version": 1,
+        "points": 256,
+        "frequency_mode": "relative",
+        "traces": ["baseline_z", "target_z", "reference_x", "target_y"],
+        "bands": [
+            {
+                "label": "Main",
+                "role": "main",
+                "center_offset_hz": 20e6,
+                "integration_bandwidth_hz": 40e6,
+                "enabled": True,
+            },
+            {
+                "label": "Adjacent R1",
+                "role": "adjacent",
+                "center_offset_hz": 60e6,
+                "integration_bandwidth_hz": 20e6,
+                "enabled": True,
+            },
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
 class _GateSimulatedBench(SimulatedRFBench):
     def __init__(self, entered, release):
         super().__init__()
@@ -162,7 +189,7 @@ class WebAPITests(unittest.TestCase):
         )
 
         self.assertEqual(page.status_code, 200)
-        self.assertIn("DPD Control Deck", page.text)
+        self.assertIn("Remote DPD RF Workbench", page.text)
         self.assertEqual(health.json()["status"], "ok")
         self.assertEqual(devices.json()["devices"][0]["device_type"], "simulated")
         self.assertEqual(waveforms.json()["entries"][0]["path"], "reference.mat")
@@ -312,6 +339,45 @@ class WebAPITests(unittest.TestCase):
         )
         self.assertEqual(coefficients.status_code, 422)
 
+    def test_analysis_requests_use_control_security_and_are_strictly_bounded(self):
+        missing_header = self.client.post(
+            "/api/v1/session/analysis",
+            json=_analysis_profile(),
+        )
+        unknown = self.client.post(
+            "/api/v1/session/analysis",
+            json=_analysis_profile(server_path="/tmp/data"),
+            headers=self.control_headers,
+        )
+        too_many_bands = self.client.post(
+            "/api/v1/session/analysis",
+            json=_analysis_profile(
+                bands=[
+                    {
+                        "label": f"Band {index}",
+                        "role": "other",
+                        "center_offset_hz": 0.0,
+                        "integration_bandwidth_hz": 1.0,
+                    }
+                    for index in range(33)
+                ]
+            ),
+            headers=self.control_headers,
+        )
+        missing_configuration = self.client.post(
+            "/api/v1/session/analysis",
+            json=_analysis_profile(),
+            headers=self.control_headers,
+        )
+
+        self.assertEqual(missing_header.status_code, 403)
+        self.assertEqual(unknown.status_code, 422)
+        self.assertEqual(too_many_bands.status_code, 413)
+        self.assertEqual(missing_configuration.status_code, 409)
+        self.assertEqual(
+            missing_configuration.json()["error"]["code"], "reference_missing"
+        )
+
     def test_request_id_retries_are_exact_and_stop_uses_a_separate_namespace(self):
         first = self.client.post(
             "/api/v1/commands",
@@ -389,6 +455,17 @@ class WebAPITests(unittest.TestCase):
             f"/api/v1/runs/{command_id}/iterations/2/preview",
             params={"points": 32},
         ).json()
+        current_analysis_response = self.client.post(
+            "/api/v1/session/analysis",
+            json=_analysis_profile(),
+            headers=self.control_headers,
+        )
+        run_analysis_response = self.client.post(
+            f"/api/v1/runs/{command_id}/analysis",
+            json=_analysis_profile(baseline_iteration=0, target_iteration=2),
+            headers=self.control_headers,
+        )
+        session_after_analysis = self.client.get("/api/v1/session").json()
         result = self.client.get(payload["result_url"])
         run_result = self.client.get(f"/api/v1/runs/{command_id}/result.mat")
 
@@ -398,6 +475,17 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(runs["runs"][0]["run_id"], command_id)
         self.assertEqual(detail["run"]["status"], "completed")
         self.assertEqual(iteration["preview_count"], 32)
+        self.assertEqual(current_analysis_response.status_code, 200)
+        self.assertEqual(run_analysis_response.status_code, 200)
+        current_analysis = current_analysis_response.json()
+        run_analysis = run_analysis_response.json()
+        self.assertEqual(current_analysis["fft_size"], 64)
+        self.assertEqual(current_analysis["comparison"]["baseline"]["iteration"], 0)
+        self.assertEqual(current_analysis["comparison"]["target"]["iteration"], 2)
+        self.assertEqual(run_analysis["comparison"]["target"]["iteration"], 2)
+        self.assertLessEqual(len(run_analysis["frequency_hz"]), 256)
+        self.assertEqual(run_analysis_response.headers["cache-control"], "no-store")
+        self.assertEqual(session_after_analysis, session)
         self.assertNotIn("x", detail["run"])
         self.assertEqual(result.status_code, 200)
         self.assertEqual(run_result.status_code, 200)
