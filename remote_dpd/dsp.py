@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+_ALIGNMENT_FACTOR = 32
+
 
 def rms(signal: np.ndarray) -> float:
     signal = np.asarray(signal)
@@ -25,22 +27,6 @@ def nmse_db(reference: np.ndarray, measured: np.ndarray) -> float:
     )
 
 
-def _fft_resample(signal: np.ndarray, size: int) -> np.ndarray:
-    """Periodic FFT interpolation, equivalent to zero-padding the spectrum."""
-    signal = np.asarray(signal, dtype=np.complex128).reshape(-1)
-    if size == signal.size:
-        return signal.copy()
-    spectrum = np.fft.fftshift(np.fft.fft(signal))
-    output = np.zeros(size, dtype=np.complex128)
-    if size >= spectrum.size:
-        start = (size - spectrum.size) // 2
-        output[start : start + spectrum.size] = spectrum
-    else:
-        start = (spectrum.size - size) // 2
-        output[:] = spectrum[start : start + size]
-    return np.fft.ifft(np.fft.ifftshift(output)) * (size / signal.size)
-
-
 def fractional_shift(signal: np.ndarray, shift_samples: float) -> np.ndarray:
     """Circularly shift a complex waveform by a fractional number of samples."""
     signal = np.asarray(signal, dtype=np.complex128).reshape(-1)
@@ -56,21 +42,15 @@ def align_signal(
 ) -> tuple[np.ndarray, float, complex]:
     """Align measured to reference with 1/32-sample delay resolution.
 
-    The implementation uses a zero-padded FFT correlation. It returns
-    `(aligned, delay, complex_gain)` where delay
-    is the signed shift applied to measured before gain/phase correction.
+    The implementation evaluates the complete interpolated periodic
+    correlation as 32 original-length IFFTs. It returns `(aligned, delay,
+    complex_gain)` where delay is the signed shift applied to measured before
+    gain/phase correction.
     """
     reference, measured = _same_length(reference, measured)
     if reference.size == 0:
         return measured, 0.0, 1.0 + 0j
-    n = reference.size
-    factor = 32
-    ref_up = _fft_resample(reference, n * factor)
-    measured_up = _fft_resample(measured, n * factor)
-    correlation = np.fft.ifft(np.fft.fft(ref_up) * np.conj(np.fft.fft(measured_up)))
-    peak = int(np.argmax(np.abs(correlation)))
-    signed_peak = peak if peak < n * factor / 2 else peak - n * factor
-    delay = float(signed_peak) / factor
+    delay = _periodic_delay(reference, measured, factor=_ALIGNMENT_FACTOR)
     aligned = fractional_shift(measured, delay)
     coefficient = 1.0 + 0j
     if gain_phase:
@@ -85,6 +65,42 @@ def align_signal(
             coefficient = phase * reference_rms / input_rms
             aligned = aligned * coefficient
     return np.asarray(aligned, dtype=np.complex128), delay, complex(coefficient)
+
+
+def _periodic_delay(
+    reference: np.ndarray,
+    measured: np.ndarray,
+    *,
+    factor: int,
+) -> float:
+    """Return the global periodic-correlation peak on a fractional grid."""
+    sample_count = reference.size
+    cross_spectrum = np.fft.fft(reference) * np.conj(np.fft.fft(measured))
+    fractional_phase = np.ones(sample_count, dtype=np.complex128)
+    phase_step = np.exp(2j * np.pi * np.fft.fftfreq(sample_count) / factor)
+    best_magnitude = -1.0
+    best_high_resolution_index = 0
+
+    for fractional_offset in range(factor):
+        correlation = np.fft.ifft(cross_spectrum * fractional_phase)
+        integer_index = int(np.argmax(np.abs(correlation)))
+        magnitude = float(abs(correlation[integer_index]))
+        high_resolution_index = factor * integer_index + fractional_offset
+        if magnitude > best_magnitude or (
+            magnitude == best_magnitude
+            and high_resolution_index < best_high_resolution_index
+        ):
+            best_magnitude = magnitude
+            best_high_resolution_index = high_resolution_index
+        fractional_phase *= phase_step
+
+    high_resolution_size = sample_count * factor
+    signed_index = (
+        best_high_resolution_index
+        if best_high_resolution_index < high_resolution_size / 2
+        else best_high_resolution_index - high_resolution_size
+    )
+    return float(signed_index) / factor
 
 
 def _same_length(
