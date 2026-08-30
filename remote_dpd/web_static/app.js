@@ -868,11 +868,11 @@ function selectDevice(deviceType) {
   byId("ilc-mu").value = configuration.runtime_config.mu;
   byId("device-schema-label").textContent =
     `${deviceType.toUpperCase()} · V${state.device.schema.schema_version}`;
-  renderDeviceOptions(state.device.schema.fields);
+  renderDeviceOptions(state.device.schema.fields, common.device_options || {});
   updateButtons();
 }
 
-function renderDeviceOptions(fields) {
+function renderDeviceOptions(fields, configuredOptions = {}) {
   const options = byId("device-option-fields");
   options.replaceChildren();
   const grid = document.createElement("div");
@@ -881,6 +881,11 @@ function renderDeviceOptions(fields) {
   fields
     .filter((field) => field.name !== "pa_coefficients")
     .forEach((field) => {
+      const hasConfiguredValue = Object.prototype.hasOwnProperty.call(
+        configuredOptions,
+        field.name,
+      );
+      const configuredValue = hasConfiguredValue ? configuredOptions[field.name] : field.default;
       const label = document.createElement("label");
       const title = document.createElement("span");
       title.textContent = field.name.replaceAll("_", " ");
@@ -898,18 +903,20 @@ function renderDeviceOptions(fields) {
           option.textContent = String(value);
           control.append(option);
         });
-        control.value = JSON.stringify(field.default ?? field.enum[0]);
+        control.value = JSON.stringify(configuredValue ?? field.enum[0]);
       } else if (field.type === "boolean") {
         control = document.createElement("input");
         control.type = "checkbox";
-        control.checked = Boolean(field.default);
+        control.checked = Boolean(configuredValue);
       } else if (field.type === "array" || field.type === "object") {
         control = document.createElement("textarea");
-        control.value = JSON.stringify(field.default ?? (field.type === "array" ? [] : {}));
+        control.value = JSON.stringify(
+          configuredValue ?? (field.type === "array" ? [] : {}),
+        );
         control.rows = 3;
       } else {
         control = document.createElement("input");
-        control.value = field.default ?? "";
+        control.value = configuredValue ?? "";
         if (field.minimum !== null) control.min = field.minimum;
         if (field.maximum !== null) control.max = field.maximum;
         if (field.step !== null) control.step = field.step;
@@ -919,9 +926,11 @@ function renderDeviceOptions(fields) {
       control.title = field.description || field.name;
       label.append(title, control);
       grid.append(label);
-    });
+  });
   options.append(grid);
-  renderCoefficients(coefficientField?.default || []);
+  renderCoefficients(
+    configuredOptions.pa_coefficients ?? coefficientField?.default ?? [],
+  );
 }
 
 function renderCoefficients(coefficients) {

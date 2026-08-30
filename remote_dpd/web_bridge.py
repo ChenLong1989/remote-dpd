@@ -17,6 +17,7 @@ import numpy as np
 from .controller import ControllerSnapshot, IterationRecord
 from .device import (
     DeviceConfig,
+    DeviceParameterSchema,
     DeviceRegistrationError,
     create_rf_bench,
     list_rf_benches,
@@ -65,6 +66,9 @@ _RUN_DETAIL_ITERATION_LIMIT = 1_000
 _RUN_DETAIL_CONFIG_MAX_NODES = 4_096
 _RUN_DETAIL_SNAPSHOT_MAX_NODES = 2_048
 _RUN_DETAIL_EVENTS_MAX_NODES = 10_000
+_SIMULATED_WEB_SAMPLE_RATE_HZ = 491.52e6
+_SIMULATED_WEB_MAX_CAPTURE_SAMPLES = 10_000_000
+_SIMULATED_WEB_MAX_ITERATIONS = 5
 
 
 class WebBridgeError(ValueError):
@@ -225,7 +229,6 @@ class WebCommandBridge:
         }
 
     def devices(self) -> dict[str, Any]:
-        default_common = DeviceConfig().to_dict()
         entries = []
         for device_type in list_rf_benches():
             try:
@@ -237,17 +240,15 @@ class WebCommandBridge:
                     exc_info=True,
                 )
                 continue
+            schema = bench.parameter_schema
             entries.append(
                 {
                     "device_type": device_type,
-                    "schema": bench.parameter_schema.to_dict(),
-                    "default_configuration": {
-                        "device_type": device_type,
-                        "device_config": default_common,
-                        "runtime_name": "basic_ilc",
-                        "runtime_config": {"mu": 0.5},
-                        "max_iterations": 10,
-                    },
+                    "schema": schema.to_dict(),
+                    "default_configuration": _web_default_configuration(
+                        device_type,
+                        schema,
+                    ),
                 }
             )
         return {"schema_version": 1, "devices": entries}
@@ -566,6 +567,27 @@ class WebCommandBridge:
             return value
         array = np.asarray(value)
         return str(array.reshape(-1)[0]) if array.size == 1 else "unknown"
+
+
+def _web_default_configuration(
+    device_type: str,
+    schema: DeviceParameterSchema,
+) -> dict[str, Any]:
+    common = DeviceConfig().to_dict()
+    max_iterations = 10
+    if device_type == "simulated":
+        common["sample_rate_hz"] = _SIMULATED_WEB_SAMPLE_RATE_HZ
+        common["device_options"] = schema.validate_options(
+            {"max_capture_samples": _SIMULATED_WEB_MAX_CAPTURE_SAMPLES}
+        )
+        max_iterations = _SIMULATED_WEB_MAX_ITERATIONS
+    return {
+        "device_type": device_type,
+        "device_config": common,
+        "runtime_name": "basic_ilc",
+        "runtime_config": {"mu": 0.5},
+        "max_iterations": max_iterations,
+    }
 
 
 def _select_live_record(

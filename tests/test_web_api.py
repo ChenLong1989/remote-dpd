@@ -180,8 +180,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-2")
-        script = self.client.get("/static/app.js?v=single-screen-2")
+        styles = self.client.get("/static/styles.css?v=single-screen-3")
+        script = self.client.get("/static/app.js?v=single-screen-3")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -196,9 +196,25 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-2", page.text)
+        self.assertIn("single-screen-3", page.text)
         self.assertEqual(health.json()["status"], "ok")
-        self.assertEqual(devices.json()["devices"][0]["device_type"], "simulated")
+        simulated = devices.json()["devices"][0]
+        self.assertEqual(simulated["device_type"], "simulated")
+        default_configuration = simulated["default_configuration"]
+        default_common = default_configuration["device_config"]
+        self.assertEqual(default_common["sample_rate_hz"], 491.52e6)
+        self.assertEqual(default_common["average_segment_count"], 10)
+        self.assertEqual(
+            default_common["device_options"]["max_capture_samples"],
+            10_000_000,
+        )
+        self.assertEqual(default_configuration["max_iterations"], 5)
+        schema_capture = next(
+            field
+            for field in simulated["schema"]["fields"]
+            if field["name"] == "max_capture_samples"
+        )
+        self.assertEqual(schema_capture["default"], 1_000_000)
         self.assertEqual(waveforms.json()["entries"][0]["path"], "reference.mat")
         self.assertEqual(preview.json()["preview_count"], 32)
         self.assertEqual(health.headers["cache-control"], "no-store")
