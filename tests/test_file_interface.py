@@ -60,6 +60,7 @@ def _configuration(
             "device_options": {
                 "noise_dbfs": -100.0,
                 "random_seed": 7,
+                "power_reference_dbm": 10.0,
                 "max_capture_samples": sample_count * 2,
             },
         },

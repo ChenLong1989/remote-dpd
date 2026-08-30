@@ -89,7 +89,7 @@ class SimulatedSchemaTests(unittest.TestCase):
 
         self.assertIs(bench.parameter_schema, SIMULATED_DEVICE_SCHEMA)
         self.assertEqual(SIMULATED_DEVICE_SCHEMA.device_type, "simulated")
-        self.assertEqual(SIMULATED_DEVICE_SCHEMA.schema_version, 1)
+        self.assertEqual(SIMULATED_DEVICE_SCHEMA.schema_version, 2)
         self.assertEqual(
             {field.name for field in SIMULATED_DEVICE_SCHEMA.fields},
             {
@@ -104,8 +104,16 @@ class SimulatedSchemaTests(unittest.TestCase):
             },
         )
         defaults = SIMULATED_DEVICE_SCHEMA.validate_options({})
-        self.assertTrue(any(row["m"] > 0 for row in defaults["pa_coefficients"]))
-        self.assertTrue(any(row["p"] > 1 for row in defaults["pa_coefficients"]))
+        self.assertEqual(
+            defaults["pa_coefficients"],
+            [
+                {"p": 1, "m": 0, "real": 1.0, "imag": 0.0},
+                {"p": 1, "m": 1, "real": 0.04, "imag": 0.015},
+                {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
+                {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
+            ],
+        )
+        self.assertEqual(defaults["power_reference_dbm"], 1.0)
 
     def test_schema_rejects_unknown_and_invalid_options_during_configuration(self):
         invalid_options = (

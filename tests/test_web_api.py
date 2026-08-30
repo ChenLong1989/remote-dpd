@@ -57,6 +57,7 @@ def _configuration(sample_count=64, max_iterations=2):
             "device_options": {
                 "noise_dbfs": -100.0,
                 "random_seed": 7,
+                "power_reference_dbm": 10.0,
                 "max_capture_samples": sample_count * 2,
             },
         },
@@ -200,6 +201,7 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(health.json()["status"], "ok")
         simulated = devices.json()["devices"][0]
         self.assertEqual(simulated["device_type"], "simulated")
+        self.assertEqual(simulated["schema"]["schema_version"], 2)
         default_configuration = simulated["default_configuration"]
         default_common = default_configuration["device_config"]
         self.assertEqual(default_common["sample_rate_hz"], 491.52e6)
@@ -207,6 +209,21 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(
             default_common["device_options"]["max_capture_samples"],
             10_000_000,
+        )
+        self.assertEqual(
+            default_common["device_options"]["power_reference_dbm"],
+            1.0,
+        )
+        self.assertEqual(
+            [
+                row
+                for row in default_common["device_options"]["pa_coefficients"]
+                if row["p"] == 3
+            ],
+            [
+                {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
+                {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
+            ],
         )
         self.assertEqual(default_configuration["max_iterations"], 5)
         schema_capture = next(

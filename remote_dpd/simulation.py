@@ -26,8 +26,8 @@ from .preprocessing import CaptureBatch
 _DEFAULT_PA_COEFFICIENTS = [
     {"p": 1, "m": 0, "real": 1.0, "imag": 0.0},
     {"p": 1, "m": 1, "real": 0.04, "imag": 0.015},
-    {"p": 3, "m": 0, "real": -0.12, "imag": 0.025},
-    {"p": 3, "m": 1, "real": -0.02, "imag": 0.01},
+    {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
+    {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
 ]
 
 _PA_COEFFICIENT_FIELD = DeviceParameterField(
@@ -67,7 +67,7 @@ _PA_COEFFICIENT_FIELD = DeviceParameterField(
 
 SIMULATED_DEVICE_SCHEMA = DeviceParameterSchema(
     device_type="simulated",
-    schema_version=1,
+    schema_version=2,
     fields=(
         DeviceParameterField(
             name="pa_coefficients",
@@ -121,7 +121,7 @@ SIMULATED_DEVICE_SCHEMA = DeviceParameterSchema(
             value_type=DeviceParameterType.NUMBER,
             minimum=-300.0,
             maximum=300.0,
-            default=20.0,
+            default=1.0,
             unit="dBm",
             description="Measured power for a unit-RMS noiseless PA output.",
         ),

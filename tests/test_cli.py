@@ -187,6 +187,7 @@ class CLITests(unittest.TestCase):
                     "device_options": {
                         "max_capture_samples": sample_count * 2,
                         "noise_dbfs": -100.0,
+                        "power_reference_dbm": 10.0,
                     },
                 },
                 "runtime_name": "basic_ilc",

@@ -24,17 +24,17 @@ connect -> configure -> upload_waveform -> start_transmission
 
 ## 2. 动态配置 schema
 
-`SIMULATED_DEVICE_SCHEMA` 的设备类型为 `simulated`，版本为 1，公开以下可由后续网页动态编辑的字段：
+`SIMULATED_DEVICE_SCHEMA` 的设备类型为 `simulated`，版本为 2，公开以下可由后续网页动态编辑的字段：
 
 | 字段 | 当前默认值 | 含义 |
 | --- | --- | --- |
-| `pa_coefficients` | 温和有记忆非线性预设 | 全部复系数，每行含正奇数 `p`、非负 `m`、`real` 和 `imag` |
+| `pa_coefficients` | 两个一阶项和两个三阶项 | 全部复系数，每行含正奇数 `p`、非负 `m`、`real` 和 `imag` |
 | `system_gain_db` | `-6.0` | 反馈采集路径固定幅度增益 |
 | `system_phase_rad` | `0.35` | 反馈采集路径固定整体相位 |
 | `delay_samples` | `2.25` | 周期小数时延 |
 | `noise_dbfs` | `-80.0` | 复高斯噪声的复包络 RMS |
 | `random_seed` | `42` | 可复现噪声随机种子 |
-| `power_reference_dbm` | `20.0` | 无噪 PA 输出 RMS 为 1 时的功率标定值 |
+| `power_reference_dbm` | `1.0` | 无噪 PA 输出 RMS 为 1 时的功率标定值 |
 | `max_capture_samples` | `1000000` | 单次 `capture()` 最大样点数 |
 
 schema 拒绝未知字段、空 PA 系数表、偶数/非正阶数、负记忆深度、非有限数和越界值。`DeviceConfig` 中未填写的仿真专属字段由 schema 补入默认值，生效配置与调用方对象完全分离。
@@ -55,7 +55,16 @@ pa[n] = sum(a[p,m] * u[n-m] * abs(u[n-m]) ** (p-1))
 
 索引通过 `np.roll()` 循环，因此段首与段尾连续，符合周期波形闭环假设。任意配置导致的非有限输出会作为仿真错误拒绝，而不是裁剪。
 
-默认 PA 同时含 `m>0` 的记忆项和 `p>1` 的非线性项。固定测试波形上，基础 ILC 五次更新可将 NMSE 从约 `-36.2 dB` 改善到约 `-63.5 dB`；该结论只保证默认预设，不保证用户任意系数组合收敛。
+默认 PA 系数固定为：
+
+| `p` | `m` | 系数 |
+| ---: | ---: | ---: |
+| 1 | 0 | `1.0+0.0j` |
+| 1 | 1 | `0.04+0.015j` |
+| 3 | 0 | `-0.36+0.075j` |
+| 3 | 1 | `-0.06+0.03j` |
+
+在当前 `10×20 MHz @ 491.52 MS/s` 默认 waveform、`-10 dBm` 目标和 5 次 ILC 下，功率调节锁定约 `1.6 dB`。以左右最外侧 20 MHz 载波为 main、紧邻外侧 20 MHz 为 adjacent，第 0 轮分别为 `-30.73/-31.80 dBc`，第 5 轮为 `-46.92/-48.80 dBc`；NMSE 从约 `-27.19 dB` 改善到 `-43.80 dB`，最终数字峰值约 `0.929`。该结论只保证当前默认 waveform 和预设，不保证用户任意系数组合收敛。
 
 ## 4. 反馈与抓取
 
