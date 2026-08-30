@@ -199,7 +199,7 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 
 `WaveformRepository` 使用 root directory fd、`dir_fd` 和 `O_NOFOLLOW` 浏览/打开文件，只返回相对路径并拒绝所有 symlink、路径逃逸和非普通文件。加载时只接受通过文件/样点上限、类型、finite、非零 RMS 和 `0 dBFS` 安全检查的 MAT 变量 `x`。
 
-修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供 R&S 风格 Operate/Configuration/Analysis/Runs 工作区、自动与 Expert 分步控制、固定 RF abort、完整周期有界分析、历史 run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
+修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供 R&S 风格固定单屏、默认仿真一键 run、配置/Expert/Runs dialogs、固定 RF abort、完整周期有界分析、历史 run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
 
 ### Web 射频分析边界
 
@@ -207,7 +207,7 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 
 `AnalysisProfile` 是逐请求提交的版本化 Web 查询，包含相对/绝对频率显示和任意有界 measurement-band 表；它不写入原 waveform MAT、文件命令 schema、controller 配置或正式结果 MAT，也不提供跨会话 preset。频谱使用 `dBFS/bin`，物理总功率继续来自 power sensor `dBm`，在没有校准 IQ 标度时不得推导 `dBm/Hz`。EVM、连续扫频、RBW/VBW 和频谱 mask 不在当前范围。
 
-分析计算与普通命令 worker、事件循环和 safety-stop barrier 隔离，使用单并发 gate、逐 trace 中间数组释放、有界结果缓存和独立输入/输出预算。分析端点即使使用 `POST` 承载结构化 profile 也保持语义只读，并继续执行现有 Host/Origin/JSON/自定义头/no-store 安全边界。任何分析错误或资源拒绝只影响该响应，不能阻塞或改变控制链。详细数值、UI 和 API 草案见 `docs/web_console_design.md`。
+分析计算与普通命令 worker、事件循环和 safety-stop barrier 隔离，使用单并发 gate、逐 trace 中间数组释放、有界结果缓存和独立输入/输出预算。分析端点即使使用 `POST` 承载结构化 profile 也保持语义只读，并继续执行现有 Host/Origin/JSON/自定义头/no-store 安全边界。任何分析错误或资源拒绝只影响该响应，不能阻塞或改变控制链。详细数值、UI 和 API 契约见 `docs/web_console_design.md`。
 
 ## 11. MAT 边界
 

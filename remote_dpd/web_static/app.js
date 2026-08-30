@@ -29,7 +29,8 @@ const state = {
   markerIndex: null,
   spectrumGeometry: null,
   displayInitializedFor: "",
-  workspace: "operate",
+  auxView: "convergence",
+  initialized: false,
   selectedRunId: null,
   nextAction: null,
 };
@@ -447,11 +448,11 @@ function peakSearch() {
   drawSpectrum("spectrum-plot");
 }
 
-function drawTrend() {
+function drawTrend(canvas = byId("auxiliary-plot")) {
   const records = state.session?.controller?.records || [];
   const points = records.map((record) => [record.iteration, record.nmse_db]);
   drawXYPlot(
-    byId("trend-plot"),
+    canvas,
     [{ points, color: "#20d8d3", width: 1.8 }],
     {
       xFormatter: (value) => Math.round(value).toString(),
@@ -463,7 +464,7 @@ function drawTrend() {
   );
 }
 
-function drawPowerTrace() {
+function drawPowerTrace(canvas = byId("auxiliary-plot")) {
   const trace = state.session?.controller?.power_trace || [];
   const points = trace.map((item) => [item.attenuation_db, item.power_dbm]);
   const series = [{ points, color: "#ffd400", width: 1.8 }];
@@ -487,7 +488,7 @@ function drawPowerTrace() {
       });
     }
   }
-  drawXYPlot(byId("power-plot"), series, {
+  drawXYPlot(canvas, series, {
     xFormatter: (value) => value.toFixed(1),
     yFormatter: (value) => value.toFixed(1),
     xLabel: "TX ATTENUATION (dB)",
@@ -496,7 +497,7 @@ function drawPowerTrace() {
   });
 }
 
-function drawStimulusResponse() {
+function stimulusResponseSeries(kind) {
   const response = state.analysis?.stimulus_response;
   const baseline = response?.baseline?.points || [];
   const target = response?.target?.points || [];
@@ -520,18 +521,40 @@ function drawStimulusResponse() {
       color: TRACE_COLORS.target_z,
     },
   ];
-  drawXYPlot(byId("amam-plot"), amamSeries, {
+  return kind === "amam" ? amamSeries : ampmSeries;
+}
+
+function drawAuxiliary() {
+  const canvas = byId("auxiliary-plot");
+  const diagnostics = byId("alignment-diagnostics");
+  diagnostics.hidden = state.auxView !== "alignment";
+  canvas.hidden = state.auxView === "alignment";
+  const titles = {
+    convergence: "Iteration NMSE",
+    amam: "AM / AM Stimulus Response",
+    ampm: "AM / PM Stimulus Response",
+    power: "Attenuation / Output Power",
+    alignment: "Capture Alignment Diagnostics",
+  };
+  byId("auxiliary-title").textContent = titles[state.auxView];
+  if (state.auxView === "alignment") {
+    renderAlignmentDiagnostics();
+    return;
+  }
+  if (state.auxView === "convergence") {
+    drawTrend(canvas);
+    return;
+  }
+  if (state.auxView === "power") {
+    drawPowerTrace(canvas);
+    return;
+  }
+  const isAmAm = state.auxView === "amam";
+  drawXYPlot(canvas, stimulusResponseSeries(state.auxView), {
     xFormatter: (value) => value.toFixed(2),
-    yFormatter: (value) => value.toFixed(2),
+    yFormatter: (value) => value.toFixed(isAmAm ? 2 : 1),
     xLabel: "INPUT |Y|",
-    yLabel: "OUTPUT |Z|",
-    emptyMessage: "NO STIMULUS / RESPONSE DATA",
-  });
-  drawXYPlot(byId("ampm-plot"), ampmSeries, {
-    xFormatter: (value) => value.toFixed(2),
-    yFormatter: (value) => value.toFixed(1),
-    xLabel: "INPUT |Y|",
-    yLabel: "PHASE (deg)",
+    yLabel: isAmAm ? "OUTPUT |Z|" : "PHASE (deg)",
     emptyMessage: "NO STIMULUS / RESPONSE DATA",
   });
 }
@@ -591,8 +614,7 @@ function renderAnalysisResults() {
     });
   }
   drawSpectrum("spectrum-plot");
-  drawSpectrum("analysis-spectrum-plot", true);
-  drawStimulusResponse();
+  drawAuxiliary();
 }
 
 function renderAlignmentDiagnostics() {
@@ -632,18 +654,16 @@ function renderAlignmentDiagnostics() {
 }
 
 function switchWorkspace(name) {
-  state.workspace = name;
-  document.querySelectorAll(".workspace-tab").forEach((button) => {
-    button.classList.toggle("active", button.dataset.workspace === name);
-  });
-  document.querySelectorAll(".workspace-panel").forEach((panel) => {
-    panel.classList.toggle("active", panel.dataset.panel === name);
-  });
+  if (name === "configuration") byId("configuration-dialog").showModal();
+  if (name === "runs") {
+    byId("runs-dialog").showModal();
+    refreshRuns();
+  }
   if (name === "analysis") {
+    byId("runs-dialog").close();
     syncAnalysisIterationOptions();
     queueAnalysisRefresh(true);
   }
-  if (name === "runs") refreshRuns();
   window.setTimeout(renderAllPlots, 0);
 }
 
@@ -708,12 +728,12 @@ function renderSession(payload) {
   byId("rf-state").classList.toggle("off", !transmitting);
   byId("rf-state").classList.toggle("fault", controller?.state === "failed");
   setConnectionState(connected);
-  renderSignalPath(controller);
   renderAlignmentDiagnostics();
   updateButtons();
   syncAnalysisIterationOptions();
-  drawTrend();
-  drawPowerTrace();
+  drawAuxiliary();
+  byId("expert-controller-state").textContent = (controller?.state || "IDLE").toUpperCase();
+  byId("expert-run-id").textContent = payload.run_id || "—";
   byId("service-status-dot").classList.add("online");
   byId("service-status-dot").classList.remove("warning");
   byId("service-status").textContent = "CONNECTED";
@@ -725,35 +745,35 @@ function renderSession(payload) {
 }
 
 function updateWorkflow(controller) {
-  let action = { kind: "workspace", value: "configuration" };
-  let label = "Configure signal path";
-  let detail = "Select a waveform and review RF safety settings.";
-  if (controller?.state === "power_ready") {
-    action = { kind: "command", value: "calibrate" };
-    label = "Calibrate feedback";
-    detail = "Power is locked. Capture and establish the fixed alignment gain.";
-  } else if (controller?.state === "calibrated") {
-    action = { kind: "command", value: "step" };
-    label = "Evaluate next ILC iteration";
-    detail = "Calibration is complete and the next predistorted waveform can be evaluated.";
+  const busy = Boolean(state.session?.active_command_id || state.activeCommand);
+  let label = "DEFAULT SIMULATION";
+  let status = "Ready to run the complete closed loop.";
+  let detail = "One click loads, configures, tunes, calibrates, iterates, stores, and stops RF.";
+  if (!state.initialized) {
+    label = "INITIALIZING";
+    status = "Loading default bench and waveform…";
+  } else if (!state.selectedWaveform) {
+    label = "BLOCKED";
+    status = "No safe MAT waveform is available.";
+    detail = "Add a waveform containing vector x to the configured waveform root.";
+  } else if (busy) {
+    label = "AUTOMATIC LOOP ACTIVE";
+    status = `${controller?.active_operation || "run"} · iteration ${controller?.iteration ?? 0}`;
+    detail = "RF abort remains available while the command is active.";
   } else if (controller?.state === "completed") {
-    action = { kind: "command", value: "export" };
-    label = "Export final MAT result";
-    detail = "The configured number of evaluated DPD iterations is complete.";
+    label = "SIMULATION COMPLETED";
+    status = "Final evaluated result is ready.";
+    detail = "Run again with the current draft, export MAT, or inspect the auxiliary results.";
   } else if (controller?.state === "failed" || controller?.state === "stopped") {
-    action = { kind: "command", value: "reset" };
-    label = "Reset controller";
-    detail = "Review the error and return the controller to IDLE before another run.";
-  } else if (controller?.configured && controller?.reference_loaded) {
-    action = { kind: "command", value: "power_tune" };
-    label = "Tune output power";
-    detail = "The RF path is configured and the reference waveform is ready.";
+    label = "CONTROLLER REQUIRES RESET";
+    status = controller.last_error?.message || `Controller is ${controller.state}.`;
+    detail = "Reset the controller before starting another default simulation.";
   }
-  state.nextAction = action;
+  state.nextAction = { kind: "workspace", value: "configuration" };
   byId("next-action-label").textContent = label;
+  byId("workflow-status").textContent = status;
   byId("next-action-detail").textContent = detail;
-  byId("next-action").textContent =
-    action.kind === "workspace" ? "Open Configuration" : label;
+  byId("next-action").textContent = "Config";
 }
 
 function updateButtons() {
@@ -776,9 +796,8 @@ function updateButtons() {
     controller?.transmitting ||
     !["ready", "power_ready"].includes(controller?.state);
   byId("action-stop-tx").disabled = busy || !controller?.transmitting;
-  byId("action-run").disabled = busy || !hasWaveform || !state.device;
+  byId("action-run").disabled = !state.initialized || busy || !hasWaveform || !state.device;
   byId("config-run").disabled = byId("action-run").disabled;
-  byId("config-load").disabled = busy || !hasWaveform;
   byId("config-apply").disabled = busy || !state.device;
   byId("action-power").disabled = busy || !configured || !referenceLoaded;
   byId("action-calibrate").disabled = busy || controller?.state !== "power_ready";
@@ -787,6 +806,11 @@ function updateButtons() {
   byId("action-reset").disabled = busy || !controller;
   byId("action-stop").disabled = !busy && !controller?.transmitting;
   byId("next-action").disabled = busy;
+  if (!state.initialized) byId("action-run").textContent = "Loading Default Bench";
+  else if (busy) byId("action-run").textContent = `Running · Iteration ${controller?.iteration ?? 0}`;
+  else if (["failed", "stopped"].includes(controller?.state)) byId("action-run").textContent = "Reset Controller";
+  else if (controller?.state === "completed") byId("action-run").textContent = "Run Again";
+  else byId("action-run").textContent = "Start Default Simulation";
   updateWorkflow(controller);
 }
 
@@ -1086,6 +1110,7 @@ function addMeasurementBandRow(
 }
 
 function initializeMeasurementBands() {
+  byId("measurement-band-rows").replaceChildren();
   addMeasurementBandRow({
     enabled: false,
     label: "Main",
@@ -1107,6 +1132,48 @@ function initializeMeasurementBands() {
     center_mhz: "",
     bandwidth_mhz: "",
   });
+}
+
+function resetDefaults() {
+  const deviceType = byId("device-select").value || state.devices[0]?.device_type;
+  if (deviceType) selectDevice(deviceType);
+  if (state.waveforms.length) {
+    byId("waveform-select").value = state.waveforms[0].path;
+    state.selectedWaveform = state.waveforms[0].path;
+    previewSelectedWaveform();
+  }
+  initializeMeasurementBands();
+  state.analysisKey = "";
+  setMessage("Default simulated configuration restored.", "success");
+  updateButtons();
+}
+
+function switchConfigTab(name) {
+  document.querySelectorAll("[data-config-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.configTab === name);
+  });
+  document.querySelectorAll("[data-config-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.configPanel === name);
+  });
+}
+
+function applyDraft() {
+  try {
+    collectConfiguration();
+    collectMeasurementBands();
+    byId("configuration-dialog").close();
+    state.analysisKey = "";
+    setMessage("Configuration draft validated. It will apply to the next run.", "success");
+    updateButtons();
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+function runPrimaryAction() {
+  const controllerState = state.session?.controller?.state;
+  if (["failed", "stopped"].includes(controllerState)) submitAction("reset");
+  else submitAction("run");
 }
 
 function collectMeasurementBands() {
@@ -1469,32 +1536,33 @@ function connectEvents() {
 function renderAllPlots() {
   try {
     drawSpectrum("spectrum-plot");
-    drawSpectrum("analysis-spectrum-plot", true);
   } catch (error) {
     console.warn(error);
   }
-  drawTrend();
-  drawPowerTrace();
-  drawStimulusResponse();
-}
-
-function toggleMaximize(button) {
-  const windowElement = button.closest(".instrument-window");
-  if (!windowElement) return;
-  const maximized = windowElement.classList.toggle("maximized");
-  button.textContent = maximized ? "×" : "□";
-  window.setTimeout(renderAllPlots, 0);
+  drawAuxiliary();
 }
 
 function bindControls() {
-  document.querySelectorAll(".workspace-tab").forEach((button) => {
-    button.addEventListener("click", () => switchWorkspace(button.dataset.workspace));
+  byId("open-configuration").addEventListener("click", () => switchWorkspace("configuration"));
+  byId("open-runs").addEventListener("click", () => switchWorkspace("runs"));
+  byId("open-expert").addEventListener("click", () => byId("expert-dialog").showModal());
+  document.querySelectorAll("[data-dialog-close]").forEach((button) => {
+    button.addEventListener("click", () => byId(button.dataset.dialogClose).close());
   });
-  document.querySelectorAll("[data-path-target]").forEach((button) => {
-    button.addEventListener("click", () => switchWorkspace(button.dataset.pathTarget));
+  document.querySelectorAll("[data-dialog-abort]").forEach((button) => {
+    button.addEventListener("click", requestStop);
   });
-  document.querySelectorAll("[data-maximize]").forEach((button) => {
-    button.addEventListener("click", () => toggleMaximize(button));
+  document.querySelectorAll("[data-config-tab]").forEach((button) => {
+    button.addEventListener("click", () => switchConfigTab(button.dataset.configTab));
+  });
+  document.querySelectorAll("[data-aux-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.auxView = button.dataset.auxView;
+      document.querySelectorAll("[data-aux-view]").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      drawAuxiliary();
+    });
   });
   byId("device-select").addEventListener("change", (event) => selectDevice(event.target.value));
   byId("waveform-select").addEventListener("change", previewSelectedWaveform);
@@ -1511,17 +1579,17 @@ function bindControls() {
   byId("action-power").addEventListener("click", () => submitAction("power_tune"));
   byId("action-calibrate").addEventListener("click", () => submitAction("calibrate"));
   byId("action-step").addEventListener("click", () => submitAction("step"));
-  byId("action-run").addEventListener("click", () => submitAction("run"));
+  byId("action-run").addEventListener("click", runPrimaryAction);
   byId("action-reset").addEventListener("click", () => submitAction("reset"));
   byId("action-export").addEventListener("click", () => submitAction("export"));
   byId("action-stop").addEventListener("click", requestStop);
-  byId("config-load").addEventListener("click", () => submitAction("load"));
-  byId("config-apply").addEventListener("click", () => submitAction("configure"));
-  byId("config-run").addEventListener("click", () => submitAction("run"));
-  byId("next-action").addEventListener("click", () => {
-    if (state.nextAction?.kind === "command") submitAction(state.nextAction.value);
-    else switchWorkspace(state.nextAction?.value || "configuration");
+  byId("config-reset-defaults").addEventListener("click", resetDefaults);
+  byId("config-apply").addEventListener("click", applyDraft);
+  byId("config-run").addEventListener("click", () => {
+    byId("configuration-dialog").close();
+    submitAction("run");
   });
+  byId("next-action").addEventListener("click", () => switchWorkspace("configuration"));
   byId("refresh-analysis").addEventListener("click", () => refreshAnalysis(true));
   byId("analysis-refresh").addEventListener("click", () => refreshAnalysis(true));
   byId("frequency-mode").addEventListener("change", () => {
@@ -1561,20 +1629,19 @@ function bindControls() {
   document.addEventListener("keydown", (event) => {
     const editing = event.target instanceof Element && event.target.matches("input, select, textarea");
     if (event.key.toLowerCase() !== "r" || editing) return;
-    if (!byId("action-run").disabled) submitAction("run");
+    if (!byId("action-run").disabled) runPrimaryAction();
   });
   window.addEventListener("resize", renderAllPlots);
   window.addEventListener("beforeunload", () => state.eventSource?.close());
 }
 
 async function initialize() {
-  ["spectrum-plot", "analysis-spectrum-plot", "amam-plot", "ampm-plot", "power-plot", "trend-plot"].forEach(
-    (id) => drawEmptyPlot(byId(id)),
-  );
+  ["spectrum-plot", "auxiliary-plot"].forEach((id) => drawEmptyPlot(byId(id)));
   initializeMeasurementBands();
   bindControls();
   try {
     await Promise.all([loadDevices(), loadWaveforms(), refreshSession(), refreshRuns()]);
+    state.initialized = true;
     connectEvents();
     window.setInterval(refreshSession, 1000);
     setMessage("RF workbench ready.", "success");

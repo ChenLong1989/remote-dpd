@@ -279,7 +279,9 @@ def create_web_app(
             "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
-        if request.url.path.startswith("/api/"):
+        if request.url.path == "/" or request.url.path.startswith(
+            ("/api/", "/static/")
+        ):
             response.headers["Cache-Control"] = "no-store"
         return response
 

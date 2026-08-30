@@ -106,15 +106,15 @@ run 结果下载在整个 ASGI response 生命周期内持有 `RunStore.export_g
 
 Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间不超过 60 秒、设备调用超时不超过 300 秒、ILC 最大迭代不超过 1000、PA 系数不超过 256 项、阶数不超过 99、记忆延迟不超过 4096。controller 进一步限制每轮反馈总抓取不超过 1000 万样点、保留轮次乘参考长度不超过 2000 万样点；设备 schema 和数字安全仍是最终业务校验者。
 
-所有响应设置 no-sniff、no-referrer、DENY frame 和只允许同源脚本/样式/连接的 CSP；API 和下载使用 `Cache-Control: no-store`。LAN 模式仍为无鉴权明文 HTTP，能访问端口的可信主机可以控制 RF 和下载结果；应用不自动修改防火墙。本安全边界只适用于本机或可信单用户局域网，不等价于公网部署加固。
+所有响应设置 no-sniff、no-referrer、DENY frame 和只允许同源脚本/样式/连接的 CSP；页面、静态资源、API 和下载使用 `Cache-Control: no-store`，CSS/JavaScript URL 另带显式版本参数，避免更新后混用旧资源。LAN 模式仍为无鉴权明文 HTTP，能访问端口的可信主机可以控制 RF 和下载结果；应用不自动修改防火墙。本安全边界只适用于本机或可信单用户局域网，不等价于公网部署加固。
 
 ## 6. 页面交互
 
-单页控制台使用 `OPERATE`、`CONFIGURATION`、`DPD ANALYSIS` 和 `RUNS` 四个工作区。persistent instrument header 和 channel bar 持续显示 bench、TX/RX/PWR 连接、Controller、Run、RF Output、频率、采样率、功率、衰减与迭代；固定位置的 `RF OFF / ABORT` 继续调用独立 safety-stop 端点。
+单页控制台使用固定 `100dvh` 仪表布局，document 不滚动。persistent header 持续显示 TX/RX/PWR、Controller、RF Output、中心频率、采样率、功率、衰减、迭代以及 `CONFIG/RUNS/RF OFF`。主区只同时显示 `Z₀/Zₙ` 频谱、核心 DPD result 和唯一主 CTA；底部单一辅助 pane 在 Convergence、AM/AM、AM/PM、Power Tune、Alignment 间切换。
 
-`OPERATE` 以 `Z₀/Zₙ` 完整周期频谱和 DPD measurement results 为中心，自动闭环为主操作，原 connect/disconnect/load/configure/start/stop TX/power tune/calibrate/step/reset/export 保留在 Expert Manual Control。`CONFIGURATION` 按信号源、功率安全、DPD runtime、Analysis Profile 和 Simulation DUT 分组。`DPD ANALYSIS` 提供频谱、AM/AM、AM/PM 和 alignment MultiView。`RUNS` 提供历史迭代重分析、配置/snapshot/结构化事件和正式 MAT 下载。
+Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Simulation DUT 页签分组。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect。
 
-页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，推荐下一步只作为 UI 引导；服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set、相对/绝对频率和窗口放大，不引入 Node 构建链或外部 CDN。
+页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set 和相对/绝对频率，不引入 Node 构建链或外部 CDN。
 
 ## 7. 生命周期和限制
 
@@ -126,20 +126,9 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 控制台以信号路径、RF 发射安全、频谱和 DPD 前后对比为中心；现有部署、安全、命令仲裁和设备控制边界保持不变。
 
-### 8.1 仪表工作区
+### 8.1 单屏仪表区
 
-页面改为四个顶层 workspace：
-
-| Workspace | 主要职责 |
-| --- | --- |
-| `OPERATE` | 当前信号路径、RF 状态、推荐下一步、自动闭环、主频谱和核心结果 |
-| `CONFIGURATION` | Signal Source、Receiver/Capture、Power & Safety、DPD Runtime、Simulation DUT |
-| `DPD ANALYSIS` | Spectrum、AM/AM、AM/PM、Iteration Trend、Power Tune、Alignment、Time/IQ/Error |
-| `RUNS` | 历史 run、迭代选择、重新分析、结构化诊断和正式 MAT 下载 |
-
-所有 workspace 共用 persistent instrument header，持续显示 bench/device、连接状态、Controller、Run、RF Output、中心频率、采样率、功率、衰减和迭代；`RF OFF / ABORT` 始终位于固定位置。页面切换和 SSE 重连不得触发设备动作、清空尚未提交的配置或改变 RF 状态。
-
-`OPERATE` 顶部使用 `Waveform → DPD Runtime → TX → PA/DUT → RX → Alignment → Analysis` 信号路径 block diagram。每个 block 只显示系统真实状态并可跳转到对应配置或诊断；不模拟没有后端含义的硬件按键。自动闭环为默认 CTA，connect/load/configure/start/stop TX/power tune/calibrate/step/reset/export 保留在状态感知的 Expert Manual Control 中。
+header、主频谱、核心结果/控制和辅助测量构成固定单屏。`RF OFF / ABORT` 始终位于 header；dialog 内提供等价 abort。主 CTA 默认执行完整 simulated run，connect/load/configure/start/stop TX/power tune/calibrate/step/reset 保留在 Expert dialog。Runs dialog 提供历史选择、重新分析、结构化诊断和正式 MAT 下载。
 
 ### 8.2 R&S 参考视觉语言
 
@@ -148,8 +137,8 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 - 深灰仪表底色、黑色绘图区、清晰但低干扰的灰色 major/minor grid；
 - 主 trace 黄色，目标对比 trace 青色，其他 trace 使用有限且全局一致的颜色；绿色只表示 ready/pass，琥珀表示 warning/active RF，红色只表示 fault/abort 等高优先级状态；
 - 紧凑扁平控件、细分隔线、小圆角、工程数字等宽字体，不使用装饰性 glow、大面积渐变或营销式空白；
-- 主图必须具有刻度、单位、trace 名称、显示范围、marker readout、空数据/计算中/错误状态；窗口可以放大并恢复 MultiView；
-- 英文仪器术语为主，单位使用 SI 工程前缀；桌面首先适配 `1920×1080` 和 `1366×768`，窄屏允许 workspace 纵向降级但不得隐藏 RF 状态和 abort。
+- 主图必须具有刻度、单位、trace 名称、显示范围、marker readout、空数据/计算中/错误状态；辅助图通过固定 tab 复用同一 pane；
+- 英文仪器术语为主，单位使用 SI 工程前缀；`1920×1080` 和 `1366×768` 下 document 均无横向/纵向 overflow。
 
 ### 8.3 Trace、频谱与单位
 
@@ -214,3 +203,50 @@ profile 最多包含 32 个 band、4 条 trace 和 4096 个频谱显示点。最
 现有 REST 命令、SSE、preview、run detail、下载、文件入口、controller、正式 MAT 和可信 LAN 安全边界保持兼容。旧前端元素可以重构或移除，但所有动作必须继续通过 `WebCommandBridge`/独立 stop 端点，Analysis 代码不得复制闭环流程。
 
 验收覆盖数值定义、band 边界、资源上限、API 安全、状态到推荐动作、RF 状态/abort、SSE 重连、trace/marker/iteration、measurement-band 编辑、无 profile/失败 run 和浏览器 `1920×1080`/`1366×768` 端到端。
+
+## 9. 固定单屏与默认仿真
+
+本节描述固定单屏 UI；它不改变第 1~8 节的设备控制、射频分析、命令、安全或资源契约。
+
+### 9.1 固定视口
+
+正式支持的最小视口为 `1366×768`。`html/body` 使用固定 `100dvh` 且禁止 document 级横向和纵向 overflow；主应用在扣除 header 后使用 CSS Grid 消耗全部剩余高度。用户完成默认运行、观察频谱/结果、切换辅助测量和发出 abort 均不需要页面滚动。
+
+固定单屏由以下区域组成：
+
+| 区域 | 固定内容 |
+| --- | --- |
+| Header/status | 产品、TX/RX/PWR、Controller、RF Output、Fc、Fs、Pout、Att、Iteration、Config、Runs、RF abort |
+| Main spectrum | `Z₀/Zₙ`、可选 `x/y`、Marker、Peak Search、频率模式和 display controls |
+| Result/control | NMSE、Pout、PAPR、ACLR、状态/错误、唯一主 CTA、Expert 入口 |
+| Auxiliary | 单一绘图区和 `Convergence/AM-AM/AM-PM/Power/Alignment` tab |
+
+旧 `OPERATE/CONFIGURATION/DPD ANALYSIS/RUNS` 顶层 workspace、同时显示的多窗口和 maximize 交互删除。Auxiliary tab 只切换同一个有界 pane 的内容；已有 analysis 数据和选定 trace/iteration 不因切换而重新提交控制命令。
+
+### 9.2 弹窗配置
+
+`CONFIG`、`EXPERT`、`RUNS` 使用原生 `<dialog>`。配置 dialog 使用 `Signal`、`Power & Safety`、`Analysis Bands`、`Simulation DUT` 页签，每次只显示一组字段；footer 固定提供 `RESET DEFAULTS`、`CANCEL`、`APPLY DRAFT` 和 `START SIMULATION`。Apply 只保留前端 draft，只有 Configure/Run 动作才提交服务端。
+
+默认字段、默认 PA 系数和默认 Main/L1/R1 行必须在 `1366×768` 对应 tab 中直接可见。任意扩展数量的 runs/events/coefficients/bands 可以在局部、有清晰边界的列表 pane 内滚动，但 dialog 与 document 本身不依赖页面滚动。dialog 打开时固定 header 中的 RF Output/abort 仍可见；Escape/Cancel 不修改 RF 或 controller。
+
+### 9.3 默认 simulated 一键闭环
+
+初始化选择首个安全 waveform、simulated bench 和注册表 `default_configuration`。资源加载成功后首页主 CTA 为 `START DEFAULT SIMULATION`，一次点击向现有 `/commands` 提交包含 waveform 与完整 configuration 的 `run`；用户不需要先打开配置、Load、Configure 或 Connect。
+
+主 CTA 状态固定为：
+
+- initializing：`LOADING DEFAULT BENCH`，disabled；
+- ready/idle：`START DEFAULT SIMULATION`；
+- busy/running：显示 action/iteration，disabled，独立 RF abort 可用；
+- completed：`RUN AGAIN`；
+- failed/stopped：显示错误摘要并提供 `RESET` 或重新运行的明确动作；
+- no waveform/default error：disabled 并显示唯一阻断原因。
+
+一键路径继续复用 `WebCommandBridge → FileCommandService → ClosedLoopController`；UI 不新增快捷设备调用、隐式服务端状态或安全旁路。
+
+### 9.4 验收
+
+- `1366×768` 与 `1920×1080` 下 `documentElement.scrollHeight <= clientHeight` 且无水平溢出；header、RF abort、主 CTA、频谱、核心结果和辅助 tab 同时可见。
+- 打开每个 dialog 后 document 仍不滚动；默认 tab 内容完整可用，只有扩展长列表出现局部滚动。
+- 首次加载后不进入任何 dialog，单击主 CTA 可以使用默认 simulated 配置和首个 waveform 完成完整自动闭环并显示最终结果。
+- Expert 全部既有动作、measurement-band 编辑、历史 run 重分析/下载、SSE 重连、Marker 和相对/绝对频率继续可用。

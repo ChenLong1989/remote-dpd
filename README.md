@@ -52,9 +52,10 @@ remote-dpd \
 浏览器打开 `http://127.0.0.1:8000/`。页面支持：
 
 - 受限 waveform root 内的 MAT `x` 浏览、安全 preview 和加载；
-- 公共设备配置、动态专属 schema 和仿真 PA 系数逐项编辑；
+- 固定单屏显示频谱、核心结果、RF 状态和单一辅助测量 pane，页面本身无需滚动；
+- 弹窗式公共设备配置、动态专属 schema、仿真 PA 系数和 measurement-band 编辑；
 - connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 分步操作和一键自动闭环；
-- 固定 RF abort、controller/channel 状态、功率调节、对齐诊断和推荐下一步；
+- 默认 simulated bench 与首个 waveform 的一键完整闭环、固定 RF abort、controller/channel 状态、功率调节和对齐诊断；
 - 完整周期 `Z₀/Zₙ` 频谱、Trace/Marker、measurement-band、ACLR、PAPR、AM/AM、AM/PM 和 NMSE 改善；
 - 临时 run、任意历史轮次重新分析、结构化事件和最终 MAT 下载。
 

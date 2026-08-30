@@ -9,7 +9,7 @@
 ## 使用与消费
 
 - [`../README.md`](../README.md)：当前可运行服务、安装方式和新文件命令概览。
-- [`system_design.md`](system_design.md)：当前系统实现及已批准的整体重构草案。
+- [`system_design.md`](system_design.md)：当前系统实现及整体设计边界。
 
 ## 模块设计
 
@@ -20,7 +20,7 @@
 - [`controller_design.md`](controller_design.md)：初始功率调节、分步/自动闭环、状态机、停止与安全收尾。
 - [`storage_design.md`](storage_design.md)：完整临时运行记录、保留清理和最终 MAT 结果。
 - [`file_interface_design.md`](file_interface_design.md)：新 MAT 命令、状态、幂等、并发和重启扫描契约。
-- [`web_console_design.md`](web_console_design.md)：本机/可信 LAN FastAPI、受限 waveform、共享命令仲裁、只读完整周期 RF 分析、R&S 风格工作区和页面安全边界。
+- [`web_console_design.md`](web_console_design.md)：本机/可信 LAN FastAPI、受限 waveform、共享命令仲裁、只读完整周期 RF 分析、R&S 风格固定单屏/弹窗和页面安全边界。
 
 ## 协作与 provenance
 
