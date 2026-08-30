@@ -180,7 +180,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-1")
+        styles = self.client.get("/static/styles.css?v=single-screen-2")
+        script = self.client.get("/static/app.js?v=single-screen-2")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -195,7 +196,7 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-1", page.text)
+        self.assertIn("single-screen-2", page.text)
         self.assertEqual(health.json()["status"], "ok")
         self.assertEqual(devices.json()["devices"][0]["device_type"], "simulated")
         self.assertEqual(waveforms.json()["entries"][0]["path"], "reference.mat")
@@ -203,6 +204,9 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(health.headers["cache-control"], "no-store")
         self.assertEqual(page.headers["cache-control"], "no-store")
         self.assertEqual(styles.headers["cache-control"], "no-store")
+        self.assertEqual(script.headers["cache-control"], "no-store")
+        self.assertIn("crypto?.getRandomValues", script.text)
+        self.assertNotIn("randomUUID", script.text)
         self.assertEqual(page.headers["x-frame-options"], "DENY")
         self.assertNotIn("access-control-allow-origin", health.headers)
 

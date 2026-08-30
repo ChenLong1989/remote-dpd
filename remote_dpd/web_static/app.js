@@ -36,6 +36,21 @@ const state = {
 };
 
 const byId = (id) => document.getElementById(id);
+let requestSequence = 0;
+
+function createRequestId(prefix = "") {
+  requestSequence = (requestSequence + 1) % 0x100000;
+  let randomToken;
+  if (globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(6);
+    globalThis.crypto.getRandomValues(bytes);
+    randomToken = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  } else {
+    const timer = Math.floor((globalThis.performance?.now?.() || 0) * 1000).toString(36);
+    randomToken = `${timer}${requestSequence.toString(36)}`;
+  }
+  return `${prefix}${Date.now().toString(36)}-${randomToken}`.slice(0, 40);
+}
 
 function formatNumber(value, digits = 2) {
   return Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
@@ -1316,7 +1331,7 @@ async function submitAction(action) {
   try {
     const payload = {
       action,
-      request_id: `${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
+      request_id: createRequestId(),
     };
     if (action === "load" || action === "run") {
       if (!state.selectedWaveform) throw new Error("Select a reference waveform.");
@@ -1369,7 +1384,7 @@ async function requestStop() {
   try {
     setMessage("Sending immediate RF-off request…");
     const status = await postJSON("/api/v1/stop", {
-      request_id: `stop-${Date.now().toString(36)}`,
+      request_id: createRequestId("stop-"),
     });
     renderCommandStatus(status);
     await refreshSession();
