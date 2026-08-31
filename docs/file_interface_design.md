@@ -34,8 +34,12 @@
 
 | 动作 | 行为 |
 | --- | --- |
+| `connect` | 重新连接当前已创建但已断开的 controller；首次建链由 `configure` 完成 |
+| `disconnect` | 安全停发并断开当前设备，使已应用配置和运行状态失效 |
 | `load` | 保存或替换参考 `x`，使旧校准和迭代失效 |
 | `configure` | 根据 `device_type` 创建新 controller，连接设备并应用配置 |
+| `start_transmission` | 上传并循环发射参考 `x`，保留有效的功率锁定状态 |
+| `stop_transmission` | 停止 RF 输出但不主动丢弃仍有效的配置和校准 |
 | `power_tune` | 必要时先发送 `x`，再完成初始功率调节 |
 | `calibrate` | 必要时重启已调功率的 `x`，监控功率并提交第 0 轮 |
 | `step` | 执行一次完整 ILC 发送、监控、抓取和提交 |
@@ -101,7 +105,7 @@ JSON 拒绝重复 key、NaN/Infinity、未知字段和非法类型。`ClosedLoop
 
 只要存在状态、同 ID run 或结果证据，就不会把命令当作新命令执行。已完成的普通分步命令状态保持不变。
 
-一个非 `stop` 命令由单 worker 执行。任务运行中到达的其他非 `stop` 命令立即写 `accepted=0, state=busy, error_code=busy`，不会排队后意外执行。`stop` 绕过该限制，直接调用 processor 的取消锁存和当前/pending controller 的线程安全停止入口；停止状态 monitor 绑定被停止的命令 ID，后续新 controller 不会改变旧 stop 命令的结果。
+一个非 `stop` 命令由单 worker 执行。任务运行中到达的其他非 `stop` 命令立即写 `accepted=0, state=busy, error_code=busy`，不会排队后意外执行。`stop` 绕过该限制，直接调用 processor 的取消锁存和当前/pending controller 的线程安全停止入口；Web 入口还使用独立 immediate-stop barrier，保证 safety stop 不被正在写入的大命令 MAT 阻塞，并拒绝 stop 到达前已开始但尚未正式投送的普通命令。停止状态 monitor 绑定被停止的命令 ID，后续新 controller 不会改变旧 stop 命令的结果。
 
 服务启动时先开始 watchdog，再扫描 inbox 中已经存在且文件名有效的完整命令。这样可接管启动前已经原子落盘、但尚无任何持久证据的命令。服务停止时先关闭新命令投送、停止并等待 observer，再请求当前 controller 停止、关闭 executor 并等待 worker 收尾；即使当时处于分步命令之间，只要 RF 仍在发射也会安全停止。同步和后台非 stop 入口都不会在关闭窗口新认领命令。
 

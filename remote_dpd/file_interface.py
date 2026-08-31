@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,8 +36,12 @@ if TYPE_CHECKING:
 FILE_COMMAND_SCHEMA_VERSION = 1
 COMMAND_ACTIONS = frozenset(
     {
+        "connect",
+        "disconnect",
         "load",
         "configure",
+        "start_transmission",
+        "stop_transmission",
         "power_tune",
         "calibrate",
         "step",
@@ -201,7 +205,19 @@ class FileCommandProcessor:
             self._ensure_recorder(command.command_id)
             snapshot = self.snapshot()
             self.record_snapshot(snapshot)
-            return self._execution(snapshot, "reference loaded")
+            if snapshot is None:
+                return self._execution(snapshot, "reference loaded")
+            state = (
+                ControllerState.READY.value
+                if snapshot.state is ControllerState.READY
+                else "loaded"
+            )
+            return CommandExecution(
+                snapshot,
+                state,
+                _snapshot_iteration(snapshot),
+                "reference loaded",
+            )
 
         if command.action == "configure":
             assert command.configuration is not None
@@ -213,12 +229,19 @@ class FileCommandProcessor:
             return self._execution(snapshot, "configuration applied")
 
         if command.action == "run":
-            if command.configuration is not None:
-                self._apply_configuration(command.configuration)
+            if command.configuration is not None and command.x is not None:
+                self._apply_configuration(
+                    command.configuration,
+                    replacement_reference=command.x,
+                )
                 self._raise_if_stop_requested()
-            if command.x is not None:
-                self._load_reference(command.x)
-                self._raise_if_stop_requested()
+            else:
+                if command.configuration is not None:
+                    self._apply_configuration(command.configuration)
+                    self._raise_if_stop_requested()
+                if command.x is not None:
+                    self._load_reference(command.x)
+                    self._raise_if_stop_requested()
             controller = self._require_controller()
             self._require_ready_inputs()
             snapshot = controller.snapshot()
@@ -250,7 +273,19 @@ class FileCommandProcessor:
             return self._execution(snapshot, "controller reset")
 
         controller = self._require_controller()
-        if command.action == "power_tune":
+        if command.action == "connect":
+            snapshot = controller.connect()
+            message = "RF bench connected"
+        elif command.action == "disconnect":
+            snapshot = self._disconnect_session(controller)
+            return self._execution(snapshot, "RF bench disconnected")
+        elif command.action == "start_transmission":
+            snapshot = controller.start_reference_transmission()
+            message = "reference transmission started"
+        elif command.action == "stop_transmission":
+            snapshot = controller.stop_transmission()
+            message = "RF transmission stopped"
+        elif command.action == "power_tune":
             snapshot = controller.snapshot()
             if snapshot.state is ControllerState.READY and not snapshot.transmitting:
                 controller.start_reference_transmission()
@@ -436,6 +471,53 @@ class FileCommandProcessor:
             raise storage_error
         return snapshot
 
+    def _disconnect_session(
+        self,
+        controller: ClosedLoopController,
+    ) -> ControllerSnapshot:
+        with self._lock:
+            recorder = self._recorder
+        snapshot: ControllerSnapshot | None = None
+        disconnect_error: Exception | None = None
+        storage_error: Exception | None = None
+        try:
+            snapshot = controller.disconnect()
+        except Exception as exc:  # noqa: BLE001 - storage cleanup must still run
+            disconnect_error = exc
+            snapshot = controller.snapshot()
+
+        try:
+            if disconnect_error is not None and recorder is not None:
+                recorder.record_snapshot(snapshot)
+                recorder.close()
+            else:
+                self._finalize_recorder(recorder, reason="RF bench disconnected")
+        except Exception as exc:  # noqa: BLE001 - hardware disconnect already ran
+            storage_error = exc
+        finally:
+            if recorder is not None:
+                recorder.close()
+            with self._lock:
+                self._recorder = None
+                self._run_id = None
+                if disconnect_error is None:
+                    self._configuration = None
+
+        if disconnect_error is not None:
+            if storage_error is not None:
+                _LOG.error(
+                    "failed to persist an RF bench disconnect failure",
+                    exc_info=(
+                        type(storage_error),
+                        storage_error,
+                        storage_error.__traceback__,
+                    ),
+                )
+            raise disconnect_error
+        if storage_error is not None:
+            raise storage_error
+        return snapshot
+
     @staticmethod
     def _finalize_recorder(
         recorder: RunRecorder | Any | None,
@@ -479,12 +561,21 @@ class FileCommandProcessor:
         )
         recorder.close()
 
-    def _apply_configuration(self, parsed: ParsedConfiguration) -> None:
+    def _apply_configuration(
+        self,
+        parsed: ParsedConfiguration,
+        *,
+        replacement_reference: np.ndarray | None = None,
+    ) -> None:
         self._raise_if_stop_requested()
+        explicit_reference = replacement_reference is not None
+        copied_reference = (
+            _validate_x(replacement_reference) if explicit_reference else None
+        )
         with self._lock:
             previous = self._controller
             previous_recorder = self._recorder
-            reference = self._x
+            reference = copied_reference if explicit_reference else self._x
 
         candidate = self._controller_factory(parsed.device_type)
         if not isinstance(candidate, ClosedLoopController):
@@ -525,6 +616,10 @@ class FileCommandProcessor:
                 self._pending_controller = None
                 self._device_type = parsed.device_type
                 self._configuration = effective_config
+                if explicit_reference:
+                    assert reference is not None
+                    reference.setflags(write=False)
+                    self._x = reference
                 self._recorder = None
                 self._run_id = None
             if previous is not None:
@@ -757,8 +852,11 @@ class FileCommandService:
         self._status_poll_seconds = poll_seconds
         self._lifecycle_lock = Lock()
         self._dispatch_lock = RLock()
+        self._immediate_stop_lock = Lock()
+        self._immediate_stop_requests = 0
         self._status_write_lock = Lock()
         self._active_command_id: str | None = None
+        self._active_command_action: str | None = None
         self._idle = Event()
         self._idle.set()
         self._executor: ThreadPoolExecutor | None = None
@@ -780,6 +878,30 @@ class FileCommandService:
 
         with self._dispatch_lock:
             return self._active_command_id
+
+    @contextmanager
+    def immediate_stop_barrier(self) -> Any:
+        """Request cancellation before waiting on Web command persistence.
+
+        The independent barrier prevents an ordinary command that was still being
+        serialized when the stop arrived from clearing the processor stop latch.
+        The caller must keep the context active until its formal stop command has
+        been persisted and dispatched.
+        """
+
+        with self._immediate_stop_lock:
+            self._immediate_stop_requests += 1
+        snapshot: ControllerSnapshot | None = None
+        error: Exception | None = None
+        try:
+            try:
+                snapshot = self._processor.request_stop()
+            except Exception as exc:  # noqa: BLE001 - formal stop reports the error
+                error = exc
+            yield snapshot, error
+        finally:
+            with self._immediate_stop_lock:
+                self._immediate_stop_requests -= 1
 
     def process_file(
         self,
@@ -875,6 +997,22 @@ class FileCommandService:
                 self._write_status(recovered)
                 return recovered
 
+            with self._immediate_stop_lock:
+                immediate_stop_pending = self._immediate_stop_requests > 0
+
+            if immediate_stop_pending and command.action != "stop":
+                status = CommandStatus(
+                    command_id=command.command_id,
+                    accepted=False,
+                    state=ControllerState.STOPPED.value,
+                    iteration=self._current_iteration(),
+                    message="command rejected because an immediate stop is pending",
+                    error_code="stop_pending",
+                    timestamp=_utc_timestamp(),
+                )
+                self._write_status(status)
+                return status
+
             if self._background_dispatch_stopped and command.action != "stop":
                 status = CommandStatus(
                     command_id=command.command_id,
@@ -905,7 +1043,24 @@ class FileCommandService:
                 self._write_status(status)
                 return status
             else:
-                self._processor.begin_command()
+                with self._immediate_stop_lock:
+                    immediate_stop_pending = self._immediate_stop_requests > 0
+                    if not immediate_stop_pending:
+                        self._processor.begin_command()
+                if immediate_stop_pending:
+                    status = CommandStatus(
+                        command_id=command.command_id,
+                        accepted=False,
+                        state=ControllerState.STOPPED.value,
+                        iteration=self._current_iteration(),
+                        message=(
+                            "command rejected because an immediate stop is pending"
+                        ),
+                        error_code="stop_pending",
+                        timestamp=_utc_timestamp(),
+                    )
+                    self._write_status(status)
+                    return status
                 initial = CommandStatus(
                     command_id=command.command_id,
                     accepted=True,
@@ -918,6 +1073,7 @@ class FileCommandService:
                 )
                 self._write_status(initial)
                 self._active_command_id = command.command_id
+                self._active_command_action = command.action
                 self._idle.clear()
 
         if background:
@@ -1450,6 +1606,7 @@ class FileCommandService:
     def _execute_stop(self, command: FileCommand) -> CommandStatus:
         with self._dispatch_lock:
             target_command_id = self._active_command_id
+            target_action = self._active_command_action
             try:
                 snapshot = self._processor.request_stop()
                 target_is_active = (
@@ -1484,6 +1641,7 @@ class FileCommandService:
                 status = self._stop_status_from_target(
                     command.command_id,
                     target_command_id,
+                    target_action=target_action,
                 )
             else:
                 status = self._status_from_snapshot(
@@ -1507,7 +1665,12 @@ class FileCommandService:
         if status.state == ControllerState.STOPPING.value and target_command_id:
             monitor = Thread(
                 target=self._monitor_stop_command,
-                args=(command.command_id, target_command_id, snapshot),
+                args=(
+                    command.command_id,
+                    target_command_id,
+                    target_action,
+                    snapshot,
+                ),
                 name=f"file-stop-monitor-{command.command_id}",
                 daemon=True,
             )
@@ -1521,6 +1684,7 @@ class FileCommandService:
         self,
         command_id: str,
         target_command_id: str,
+        target_action: str | None,
         requested_snapshot: ControllerSnapshot | None,
     ) -> None:
         try:
@@ -1529,6 +1693,7 @@ class FileCommandService:
             status = self._stop_status_from_target(
                 command_id,
                 target_command_id,
+                target_action=target_action,
                 requested_snapshot=requested_snapshot,
             )
             self._write_status(status)
@@ -1542,6 +1707,7 @@ class FileCommandService:
         stop_command_id: str,
         target_command_id: str,
         *,
+        target_action: str | None = None,
         requested_snapshot: ControllerSnapshot | None = None,
     ) -> CommandStatus:
         try:
@@ -1558,41 +1724,44 @@ class FileCommandService:
                 run_id=self._processor.run_id or "",
             )
 
-        if target.state == ControllerState.STOPPED.value or target.error_code in {
-            "cancelled",
-            "controller_stopped",
-        }:
+        requested_state = (
+            None if requested_snapshot is None else requested_snapshot.state
+        )
+        if requested_state is ControllerState.FAILED:
+            state = ControllerState.FAILED.value
+            error = requested_snapshot.last_error
+            message = "stop failed" if error is None else error.message
+            error_code = "stop_failed" if error is None else error.code
+        elif (
+            requested_state is ControllerState.STOPPED
+            or target.state == ControllerState.STOPPED.value
+            or target.error_code in {"cancelled", "controller_stopped"}
+        ):
             state = ControllerState.STOPPED.value
             message = f"command {target_command_id!r} stopped"
-            error_code = ""
-        elif target.state == ControllerState.COMPLETED.value:
-            state = ControllerState.COMPLETED.value
-            message = f"command {target_command_id!r} completed before stop"
             error_code = ""
         elif target.state == ControllerState.FAILED.value:
             state = ControllerState.FAILED.value
             message = target.message
             error_code = target.error_code or "stop_failed"
-        else:
-            requested_state = (
-                None if requested_snapshot is None else requested_snapshot.state
+        elif requested_state is ControllerState.COMPLETED or (
+            target.accepted
+            and not target.error_code
+            and (
+                target.state == ControllerState.COMPLETED.value
+                or (
+                    target_action is not None
+                    and self._status_is_terminal(target_action, target)
+                )
             )
-            if requested_state in {
-                ControllerState.COMPLETED,
-                ControllerState.STOPPED,
-            }:
-                state = requested_state.value
-                message = f"command {target_command_id!r} stop request completed"
-                error_code = ""
-            elif requested_state is ControllerState.FAILED:
-                state = ControllerState.FAILED.value
-                error = requested_snapshot.last_error
-                message = "stop failed" if error is None else error.message
-                error_code = "stop_failed" if error is None else error.code
-            else:
-                state = ControllerState.FAILED.value
-                message = f"command {target_command_id!r} ended without terminal status"
-                error_code = "stop_target_incomplete"
+        ):
+            state = ControllerState.COMPLETED.value
+            message = f"command {target_command_id!r} completed before stop"
+            error_code = ""
+        else:
+            state = ControllerState.FAILED.value
+            message = f"command {target_command_id!r} ended without terminal status"
+            error_code = "stop_target_incomplete"
         return CommandStatus(
             command_id=stop_command_id,
             accepted=True,
@@ -1756,6 +1925,7 @@ class FileCommandService:
         with self._dispatch_lock:
             if self._active_command_id == command_id:
                 self._active_command_id = None
+                self._active_command_action = None
                 self._idle.set()
 
     def _ensure_executor(self) -> ThreadPoolExecutor:
@@ -1875,8 +2045,20 @@ class FileCommandService:
         if not status.accepted or status.error_code:
             return True
         terminal_states = {
+            "connect": {"idle", "ready"},
+            "disconnect": {"idle"},
             "load": {"loaded", "ready"},
             "configure": {"idle", "ready"},
+            "start_transmission": {"ready", "power_ready"},
+            "stop_transmission": {
+                "idle",
+                "ready",
+                "power_ready",
+                "calibrated",
+                "completed",
+                "stopped",
+                "failed",
+            },
             "power_tune": {"power_ready"},
             "calibrate": {"calibrated"},
             "step": {"calibrated", "completed"},
@@ -2015,6 +2197,11 @@ def _parse_config_json(value: str) -> ParsedConfiguration:
     except (TypeError, ValueError) as exc:
         raise FileCommandError("invalid_config", str(exc)) from exc
     return ParsedConfiguration(device_type, closed_loop)
+
+
+def parse_configuration_json(value: str) -> ParsedConfiguration:
+    """Validate the shared strict configuration contract for non-file transports."""
+    return _parse_config_json(value)
 
 
 def _decode_typed_json(value: Any, path: str) -> Any:
@@ -2275,4 +2462,5 @@ __all__ = [
     "FileCommandProcessor",
     "FileCommandService",
     "ParsedConfiguration",
+    "parse_configuration_json",
 ]

@@ -51,6 +51,7 @@ class FinalResultExportTests(unittest.TestCase):
                     "max_capture_samples": sample_count * 2,
                     "noise_dbfs": -100.0,
                     "random_seed": 9,
+                    "power_reference_dbm": 10.0,
                 },
             ),
             runtime_config={},

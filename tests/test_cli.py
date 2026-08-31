@@ -1,10 +1,13 @@
 import json
+import socket
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
+import uvicorn
 from scipy.io import loadmat, savemat
 
 from remote_dpd.cli import build_parser, run
@@ -17,6 +20,9 @@ class CLITests(unittest.TestCase):
         self.assertEqual(args.exchange_root, "/tmp/exchange")
         self.assertTrue(args.once)
         self.assertEqual(args.retention_days, 7.0)
+        self.assertEqual(args.mode, "file")
+        self.assertEqual(args.web_host, "127.0.0.1")
+        self.assertEqual(args.web_allowed_host, [])
 
     def test_once_creates_service_directories_and_exits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -49,6 +55,113 @@ class CLITests(unittest.TestCase):
 
             self.assertEqual(run(args, stop_event=stop_event), 0)
 
+    def test_web_mode_defaults_to_loopback_and_honors_stop_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            args = build_parser().parse_args(
+                [
+                    "--exchange-root",
+                    str(root / "exchange"),
+                    "--mode",
+                    "web",
+                    "--web-port",
+                    str(port),
+                ]
+            )
+            stop_event = threading.Event()
+            stop_event.set()
+
+            with patch("uvicorn.Config", wraps=uvicorn.Config) as config:
+                self.assertEqual(run(args, stop_event=stop_event), 0)
+
+            self.assertTrue((root / "exchange" / "waveforms").is_dir())
+            self.assertEqual(config.call_args.kwargs["host"], "127.0.0.1")
+            self.assertEqual(config.call_args.kwargs["workers"], 1)
+            self.assertFalse(config.call_args.kwargs["proxy_headers"])
+            self.assertEqual(
+                config.call_args.kwargs["timeout_graceful_shutdown"],
+                10.0,
+            )
+
+    def test_trusted_lan_mode_binds_all_ipv4_interfaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            args = build_parser().parse_args(
+                [
+                    "--exchange-root",
+                    str(root / "exchange"),
+                    "--mode",
+                    "web",
+                    "--web-host",
+                    "0.0.0.0",
+                    "--web-allowed-host",
+                    "192.168.3.100",
+                    "--web-port",
+                    str(port),
+                ]
+            )
+            stop_event = threading.Event()
+            stop_event.set()
+
+            with patch("uvicorn.Config", wraps=uvicorn.Config) as config:
+                self.assertEqual(run(args, stop_event=stop_event), 0)
+
+            self.assertEqual(config.call_args.kwargs["host"], "0.0.0.0")
+
+    def test_non_loopback_bind_requires_an_explicit_trusted_host(self):
+        args = build_parser().parse_args(
+            [
+                "--exchange-root",
+                "/tmp/exchange",
+                "--mode",
+                "web",
+                "--web-host",
+                "0.0.0.0",
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "web_allowed_host"):
+            run(args)
+
+    def test_web_network_rejects_wildcards_and_public_addresses(self):
+        argument_sets = (
+            ("0.0.0.0", "*"),
+            ("0.0.0.0", "0.0.0.0"),
+            ("8.8.8.8", "192.168.3.100"),
+            ("192.168.3.100", "192.168.3.101"),
+            ("127.0.0.2", "127.0.0.2"),
+        )
+        for host, allowed_host in argument_sets:
+            with self.subTest(host=host, allowed_host=allowed_host):
+                args = build_parser().parse_args(
+                    [
+                        "--exchange-root",
+                        "/tmp/exchange",
+                        "--mode",
+                        "web",
+                        "--web-host",
+                        host,
+                        "--web-allowed-host",
+                        allowed_host,
+                    ]
+                )
+                with self.assertRaises((TypeError, ValueError)):
+                    run(args)
+
+    def test_once_is_rejected_in_web_mode(self):
+        args = build_parser().parse_args(
+            ["--exchange-root", "/tmp/exchange", "--mode", "web", "--once"]
+        )
+
+        with self.assertRaisesRegex(ValueError, "file mode"):
+            run(args)
+
     def test_once_processes_a_complete_simulated_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -74,6 +187,7 @@ class CLITests(unittest.TestCase):
                     "device_options": {
                         "max_capture_samples": sample_count * 2,
                         "noise_dbfs": -100.0,
+                        "power_reference_dbm": 10.0,
                     },
                 },
                 "runtime_name": "basic_ilc",

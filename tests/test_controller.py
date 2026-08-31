@@ -7,6 +7,8 @@ from typing import ClassVar
 import numpy as np
 
 from remote_dpd.controller import (
+    MAX_CAPTURE_WORKING_SAMPLES,
+    MAX_RETAINED_ROUND_SAMPLES,
     ClosedLoopConfig,
     ClosedLoopController,
     ControllerBusyError,
@@ -296,6 +298,35 @@ class ClosedLoopControllerTests(unittest.TestCase):
             self.make_config(max_iterations=0)
         with self.assertRaises(TypeError):
             ClosedLoopConfig(DeviceConfig(), max_iterations=True)
+
+    def test_reference_and_configuration_must_fit_operation_budgets(self):
+        cases = (
+            (
+                2_000,
+                self.make_config(average_segment_count=5_001, max_iterations=2),
+                MAX_CAPTURE_WORKING_SAMPLES,
+                "capture working limit",
+            ),
+            (
+                21_000,
+                self.make_config(average_segment_count=1, max_iterations=1_000),
+                MAX_RETAINED_ROUND_SAMPLES,
+                "retained-history limit",
+            ),
+        )
+        for sample_count, config, limit, message in cases:
+            with self.subTest(message=message):
+                bench = FakeRFBench(max(sample_count, limit))
+                controller = ClosedLoopController(bench)
+                controller.connect()
+                controller.apply_config(config)
+                samples = np.arange(sample_count)
+                reference = 0.2 * np.exp(2j * np.pi * samples / sample_count)
+
+                with self.assertRaisesRegex(ValueError, message):
+                    controller.load_reference(reference)
+
+                self.assertFalse(controller.snapshot().reference_loaded)
 
     def test_config_has_a_detached_strict_json_representation(self):
         config = ClosedLoopConfig(

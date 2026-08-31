@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Single-screen RF workbench for iterative digital predistortion control and analysis."
+    />
+    <title>Remote DPD RF Workbench</title>
+    <link rel="stylesheet" href="/static/styles.css?v=single-screen-3" />
+  </head>
+  <body>
+    <header class="instrument-header">
+      <div class="product-lockup">
+        <div class="product-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div><small>RF LINEARIZATION</small><h1>Remote DPD</h1></div>
+      </div>
+      <div class="capability-strip">
+        <div><span class="status-dot" id="tx-status-dot"></span><small>TX</small></div>
+        <div><span class="status-dot" id="rx-status-dot"></span><small>RX</small></div>
+        <div><span class="status-dot" id="power-status-dot"></span><small>PWR</small></div>
+      </div>
+      <div class="header-cell"><small>CONTROLLER</small><strong id="controller-state">IDLE</strong></div>
+      <div class="header-cell rf-state off" id="rf-state"><small>RF OUTPUT</small><strong id="rf-output-state">OFF</strong></div>
+      <div class="header-cell"><small>CENTER</small><strong id="center-readout">—</strong></div>
+      <div class="header-cell"><small>SAMPLE RATE</small><strong id="sample-rate-readout">—</strong></div>
+      <div class="header-cell"><small>OUTPUT</small><strong><span id="power-value">—</span> <em>dBm</em></strong></div>
+      <div class="header-cell"><small>TX ATT</small><strong><span id="attenuation-value">—</span> <em>dB</em></strong></div>
+      <div class="header-cell"><small>ITERATION</small><strong id="iteration-value">— / —</strong></div>
+      <div class="header-service"><span class="status-dot" id="service-status-dot"></span><strong id="service-status">CONNECTING</strong></div>
+      <button class="header-button" id="open-configuration" type="button">Config</button>
+      <button class="header-button" id="open-runs" type="button">Runs</button>
+      <button class="abort-button" id="action-stop" type="button">RF OFF / ABORT</button>
+    </header>
+
+    <main class="single-screen">
+      <section class="main-measurement">
+        <article class="instrument-window spectrum-window">
+          <div class="window-titlebar">
+            <div><span class="window-index">1</span><div><small>FREQUENCY DOMAIN</small><h2>PA Output — Before / After DPD</h2></div></div>
+            <div class="iteration-selectors">
+              <label><span>BASE</span><select id="baseline-iteration"><option value="">First</option></select></label>
+              <label><span>TARGET</span><select id="target-iteration"><option value="">Latest</option></select></label>
+              <button class="flat-button" id="analysis-refresh" type="button">Refresh</button>
+              <button class="flat-button" id="spectrum-autoset" type="button">Auto Set</button>
+              <button class="flat-button" id="marker-peak" type="button">Peak Search</button>
+            </div>
+          </div>
+          <div class="trace-bar" id="operate-trace-bar">
+            <label class="trace-toggle trace-yellow"><input type="checkbox" value="baseline_z" checked />Z₀ PA OUT</label>
+            <label class="trace-toggle trace-cyan"><input type="checkbox" value="target_z" checked />Zₙ PA OUT</label>
+            <label class="trace-toggle trace-gray"><input type="checkbox" value="reference_x" />X REF</label>
+            <label class="trace-toggle trace-magenta"><input type="checkbox" value="target_y" />Yₙ DRIVE</label>
+            <span class="trace-status" id="analysis-status">ANALYSIS STANDBY</span>
+          </div>
+          <div class="spectrum-layout">
+            <div class="plot-stack">
+              <canvas id="spectrum-plot" aria-label="PA output spectrum"></canvas>
+              <div class="marker-readout" id="marker-readout">M1 OFF</div>
+              <div class="plot-footer"><span id="spectrum-start">START —</span><span id="spectrum-bin">FFT — · BIN BW —</span><span id="spectrum-stop">STOP —</span></div>
+            </div>
+            <aside class="softkey-panel" aria-label="Spectrum display controls">
+              <label><span>FREQ MODE</span><select id="frequency-mode"><option value="relative">Relative</option><option value="absolute">Absolute RF</option></select></label>
+              <label><span>CENTER</span><div class="unit-control"><input id="display-center" value="0" inputmode="decimal" /><b>MHz</b></div></label>
+              <label><span>SPAN</span><div class="unit-control"><input id="display-span" value="100" inputmode="decimal" /><b>MHz</b></div></label>
+              <label><span>REF LEVEL</span><div class="unit-control"><input id="reference-level" value="0" inputmode="decimal" /><b>dBFS</b></div></label>
+              <label><span>LOG SCALE</span><div class="unit-control"><input id="db-per-division" value="10" inputmode="decimal" /><b>dB/div</b></div></label>
+              <button class="softkey" id="refresh-analysis" type="button">Refresh Analysis</button>
+            </aside>
+          </div>
+        </article>
+
+        <aside class="result-control">
+          <section class="instrument-window result-window">
+            <div class="window-titlebar compact"><div><span class="window-index">2</span><div><small>MEASUREMENT</small><h2>DPD Results</h2></div></div><strong class="run-readout" id="run-id">—</strong></div>
+            <div class="result-table">
+              <div class="result-head"><span>RESULT</span><span>BASE</span><span>TARGET</span><span>Δ</span></div>
+              <div><strong>NMSE</strong><span id="result-nmse-base">—</span><span id="result-nmse-target">—</span><em id="result-nmse-delta">—</em></div>
+              <div><strong>Pout</strong><span id="result-power-base">—</span><span id="result-power-target">—</span><em id="result-power-delta">—</em></div>
+              <div><strong>Drive PAPR</strong><span id="result-papr-base">—</span><span id="result-papr-target">—</span><em id="result-papr-delta">—</em></div>
+              <div><strong>Fixed Gain</strong><span>—</span><span id="gain-value">—</span><em>ratio</em></div>
+            </div>
+            <div class="band-result-list" id="band-results"><p>ACLR not configured.</p></div>
+          </section>
+
+          <section class="instrument-window control-window">
+            <div class="window-titlebar compact"><div><span class="window-index">3</span><div><small>DEFAULT WORKFLOW</small><h2>Simulation Control</h2></div></div><strong class="bench-readout" id="bench-readout">—</strong></div>
+            <div class="workflow-state">
+              <small id="next-action-label">LOADING DEFAULT BENCH</small>
+              <strong id="workflow-status">Preparing waveform and simulated RF bench…</strong>
+              <p id="next-action-detail">The default run will load, configure, tune, calibrate, iterate, and stop safely.</p>
+            </div>
+            <button class="primary-action" id="action-run" type="button" disabled>Loading Default Bench</button>
+            <div class="control-shortcuts">
+              <button class="secondary-action" id="open-expert" type="button">Expert</button>
+              <button class="secondary-action" id="next-action" type="button">Config</button>
+              <button class="secondary-action" id="action-export" type="button" disabled>Export MAT</button>
+            </div>
+            <div class="command-message" id="command-message" role="status">Console initializing…</div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="instrument-window auxiliary-window">
+        <div class="auxiliary-tabs" role="tablist" aria-label="Auxiliary measurement">
+          <span class="window-index">4</span>
+          <button class="aux-tab active" data-aux-view="convergence" type="button">Convergence</button>
+          <button class="aux-tab" data-aux-view="amam" type="button">AM / AM</button>
+          <button class="aux-tab" data-aux-view="ampm" type="button">AM / PM</button>
+          <button class="aux-tab" data-aux-view="power" type="button">Power Tune</button>
+          <button class="aux-tab" data-aux-view="alignment" type="button">Alignment</button>
+          <strong id="auxiliary-title">Iteration NMSE</strong>
+        </div>
+        <canvas id="auxiliary-plot" aria-label="Auxiliary RF measurement"></canvas>
+        <div class="diagnostic-table" id="alignment-diagnostics" hidden><p>No evaluated capture is available.</p></div>
+      </section>
+    </main>
+
+    <dialog class="instrument-dialog configuration-dialog" id="configuration-dialog">
+      <div class="dialog-titlebar">
+        <div><small>INSTRUMENT SETUP</small><h2>Simulation Configuration</h2></div>
+        <div><button class="dialog-abort" data-dialog-abort type="button">RF OFF / ABORT</button><button class="dialog-close" data-dialog-close="configuration-dialog" type="button">×</button></div>
+      </div>
+      <div class="dialog-tabs" role="tablist">
+        <button class="dialog-tab active" data-config-tab="signal" type="button">Signal</button>
+        <button class="dialog-tab" data-config-tab="power" type="button">Power & Safety</button>
+        <button class="dialog-tab" data-config-tab="analysis" type="button">Analysis Bands</button>
+        <button class="dialog-tab" data-config-tab="dut" type="button">Simulation DUT</button>
+      </div>
+      <div class="dialog-content">
+        <section class="config-panel active" data-config-panel="signal">
+          <div class="section-heading"><span>01</span><div><small>SIGNAL SOURCE</small><h3>Waveform, Carrier & Runtime</h3></div></div>
+          <div class="field-grid signal-grid">
+            <label class="wide-field"><span>Reference waveform</span><div class="inline-field"><select id="waveform-select" disabled><option>Waveform library loading…</option></select><button class="flat-button" id="refresh-waveforms" type="button" disabled>Refresh</button></div><small id="waveform-meta">Periodic MAT vector · variable x</small></label>
+            <label><span>RF bench</span><select id="device-select" disabled><option value="simulated">Simulated RF bench</option></select></label>
+            <label><span>Center frequency</span><div class="unit-control"><input id="center-frequency" value="3500" /><b>MHz</b></div></label>
+            <label><span>Sample rate</span><div class="unit-control"><input id="sample-rate" value="983.04" /><b>MS/s</b></div></label>
+            <label><span>TX channel</span><input id="tx-channel" value="0" /></label>
+            <label><span>RX channel</span><input id="rx-channel" value="0" /></label>
+            <label><span>Trigger</span><input id="trigger-source" value="immediate" /></label>
+            <label><span>Average segments</span><input id="average-segments" value="10" /></label>
+            <label><span>ILC μ</span><input id="ilc-mu" value="0.5" /></label>
+            <label><span>Iterations</span><input id="max-iterations" value="10" /></label>
+          </div>
+        </section>
+
+        <section class="config-panel" data-config-panel="power">
+          <div class="section-heading"><span>02</span><div><small>POWER & SAFETY</small><h3>Output Control Limits</h3></div></div>
+          <div class="field-grid power-grid">
+            <label><span>Target power</span><div class="unit-control"><input id="target-power" value="-10" /><b>dBm</b></div></label>
+            <label><span>Safety limit</span><div class="unit-control"><input id="safety-power" value="0" /><b>dBm</b></div></label>
+            <label><span>Initial attenuation</span><div class="unit-control"><input id="initial-attenuation" value="30" /><b>dB</b></div></label>
+            <label><span>Minimum attenuation</span><div class="unit-control"><input id="minimum-attenuation" value="0" /><b>dB</b></div></label>
+            <label><span>Maximum attenuation</span><div class="unit-control"><input id="maximum-attenuation" value="60" /><b>dB</b></div></label>
+            <label><span>Settle time</span><div class="unit-control"><input id="settle-seconds" value="0.1" /><b>s</b></div></label>
+            <label><span>Maximum adjustments</span><input id="max-adjustments" value="100" /></label>
+            <label><span>Call timeout</span><div class="unit-control"><input id="call-timeout" value="10" /><b>s</b></div></label>
+          </div>
+          <div class="safety-note"><strong>Fail-closed RF path</strong><span>Digital peak/RMS, target overshoot, absolute output power and device-call failures stop transmission through the existing controller safety path.</span></div>
+        </section>
+
+        <section class="config-panel" data-config-panel="analysis">
+          <div class="section-heading"><span>03</span><div><small>ANALYSIS PROFILE</small><h3>Measurement Bands</h3></div></div>
+          <p class="panel-note">Analysis-only values are not written to the waveform, controller, or final MAT result.</p>
+          <div class="bounded-table-pane">
+            <div class="measurement-band-table" role="table" aria-label="Measurement bands">
+              <div class="measurement-band-head" role="row"><span>On</span><span>Label</span><span>Role</span><span>Center Offset</span><span>Integration BW</span><span></span></div>
+              <div id="measurement-band-rows"></div>
+            </div>
+          </div>
+          <button class="flat-button add-row-button" id="add-measurement-band" type="button">+ Add Measurement Band</button>
+        </section>
+
+        <section class="config-panel" data-config-panel="dut">
+          <div class="section-heading"><span>04</span><div><small>SIMULATION DUT</small><h3>PA Model & Impairments</h3></div><strong id="device-schema-label">SCHEMA</strong></div>
+          <div id="device-option-fields"></div>
+          <div class="bounded-table-pane coefficient-pane">
+            <div class="coefficient-table" id="coefficient-table" role="table" aria-label="Memory polynomial coefficients">
+              <div class="coefficient-head" role="row"><span>Order</span><span>Memory</span><span>Real</span><span>Imaginary</span><span></span></div>
+              <div id="coefficient-rows"></div>
+            </div>
+          </div>
+          <button class="flat-button add-row-button" id="add-coefficient" type="button">+ Add PA Coefficient</button>
+        </section>
+      </div>
+      <div class="dialog-footer">
+        <button class="secondary-action" id="config-reset-defaults" type="button">Reset Defaults</button>
+        <span></span>
+        <button class="secondary-action" data-dialog-close="configuration-dialog" type="button">Cancel</button>
+        <button class="secondary-action" id="config-apply" type="button">Apply Draft</button>
+        <button class="primary-action compact" id="config-run" type="button">Start Simulation</button>
+      </div>
+    </dialog>
+
+    <dialog class="instrument-dialog expert-dialog" id="expert-dialog">
+      <div class="dialog-titlebar"><div><small>MANUAL CONTROL</small><h2>Expert Operations</h2></div><div><button class="dialog-abort" data-dialog-abort type="button">RF OFF / ABORT</button><button class="dialog-close" data-dialog-close="expert-dialog" type="button">×</button></div></div>
+      <div class="expert-grid">
+        <button class="command-button" id="action-load" type="button">Load X</button>
+        <button class="command-button" id="action-configure" type="button">Configure</button>
+        <button class="command-button" id="action-connect" type="button">Connect</button>
+        <button class="command-button" id="action-disconnect" type="button">Disconnect</button>
+        <button class="command-button" id="action-start-tx" type="button">Start TX</button>
+        <button class="command-button" id="action-stop-tx" type="button">Stop TX</button>
+        <button class="command-button" id="action-power" type="button">Power Tune</button>
+        <button class="command-button" id="action-calibrate" type="button">Calibrate</button>
+        <button class="command-button" id="action-step" type="button">ILC Step</button>
+        <button class="command-button" id="action-reset" type="button">Reset</button>
+      </div>
+      <div class="expert-state"><span>Controller</span><strong id="expert-controller-state">IDLE</strong><span>Run</span><strong id="expert-run-id">—</strong></div>
+      <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="expert-dialog" type="button">Close</button></div>
+    </dialog>
+
+    <dialog class="instrument-dialog runs-dialog" id="runs-dialog">
+      <div class="dialog-titlebar"><div><small>RUNSTORE</small><h2>Runs & Historical Analysis</h2></div><div><button class="dialog-abort" data-dialog-abort type="button">RF OFF / ABORT</button><button class="dialog-close" data-dialog-close="runs-dialog" type="button">×</button></div></div>
+      <div class="runs-toolbar">
+        <label><span>ANALYSIS SOURCE</span><select id="analysis-source"><option value="session">Live Session</option></select></label>
+        <button class="secondary-action" id="refresh-runs" type="button">Refresh Runs</button>
+      </div>
+      <div class="runs-layout">
+        <section class="run-browser">
+          <div class="run-list-head"><span>RUN / DEVICE</span><span>UPDATED</span><span>ITER</span><span>STATUS</span></div>
+          <div class="run-placeholder" id="run-placeholder"><strong>No stored runs</strong><span>Runs are retained for 7 days.</span></div>
+          <div class="run-list" id="run-list"></div>
+        </section>
+        <section class="run-inspector">
+          <div class="inspector-empty" id="run-inspector-empty"><strong>Select a run</strong><span>Inspect configuration, events and iterations.</span></div>
+          <div id="run-inspector-content" hidden>
+            <div class="run-inspector-title"><div><small>SELECTED RUN</small><h3 id="run-detail-title">—</h3></div><div id="run-detail-actions"></div></div>
+            <div class="run-summary" id="run-summary"></div>
+            <div class="run-detail-grid"><section><h4>Configuration</h4><pre id="run-detail-config"></pre></section><section><h4>Snapshot</h4><pre id="run-detail-snapshot"></pre></section></div>
+            <section><h4>Structured Events</h4><div class="event-list" id="run-detail-events"></div></section>
+          </div>
+        </section>
+      </div>
+      <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
+    </dialog>
+
+    <script src="/static/app.js?v=single-screen-3" defer></script>
+  </body>
+</html>
