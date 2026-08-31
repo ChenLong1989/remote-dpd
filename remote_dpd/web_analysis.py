@@ -20,7 +20,7 @@ MIN_ANALYSIS_POINTS = 256
 MAX_ANALYSIS_POINTS = 4096
 MAX_MEASUREMENT_BANDS = 32
 MAX_BAND_LABEL_LENGTH = 48
-MAX_ANALYSIS_TRACES = 4
+MAX_ANALYSIS_TRACES = 5
 MAX_CACHE_ENTRIES = 16
 MAX_CACHE_BYTES = 16 * 1024 * 1024
 DEFAULT_AMPLITUDE_FLOOR_DB = -50.0
@@ -28,7 +28,9 @@ AM_BINS = 64
 MAX_STIMULUS_RESPONSE_SAMPLES = 262_144
 SPECTRUM_FLOOR_DBFS = -300.0
 _CHUNK_SAMPLES = 1_000_000
-_TRACE_NAMES = frozenset({"baseline_z", "target_z", "reference_x", "target_y"})
+_TRACE_NAMES = frozenset(
+    {"baseline_z", "target_z", "target_error", "reference_x", "target_y"}
+)
 _BAND_ROLES = frozenset({"main", "adjacent", "other"})
 _FREQUENCY_MODES = frozenset({"relative", "absolute"})
 
@@ -51,6 +53,7 @@ class MeasurementBand:
     center_offset_hz: float
     integration_bandwidth_hz: float
     enabled: bool
+    reference_label: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +62,7 @@ class MeasurementBand:
             "center_offset_hz": self.center_offset_hz,
             "integration_bandwidth_hz": self.integration_bandwidth_hz,
             "enabled": self.enabled,
+            "reference_label": self.reference_label,
         }
 
 
@@ -123,7 +127,7 @@ class AnalysisRequest:
                 "invalid_frequency_mode",
                 "frequency_mode must be relative or absolute",
             )
-        raw_traces = payload.get("traces", ["baseline_z", "target_z"])
+        raw_traces = payload.get("traces", ["baseline_z", "target_z", "target_error"])
         if not isinstance(raw_traces, list) or not raw_traces:
             raise WebAnalysisError(
                 "invalid_analysis_traces",
@@ -344,6 +348,12 @@ def analyze_waveforms(
     traces: list[dict[str, Any]] = []
     band_values: dict[str, dict[str, float]] = {}
     for key, label, iteration, signal in trace_sources:
+        if key == "target_error":
+            if target is None:  # pragma: no cover - guarded by trace selection
+                continue
+            signal = target.z - x
+        if signal is None:  # pragma: no cover - every other source has a signal
+            continue
         normalized_spectrum = np.fft.fftshift(np.fft.fft(signal)) / signal.size
         power = np.abs(normalized_spectrum) ** 2
         compressed = np.asarray(
@@ -371,7 +381,7 @@ def analyze_waveforms(
                 **_signal_metrics(signal),
             }
         )
-        del normalized_spectrum, power, compressed
+        del normalized_spectrum, power, compressed, signal
 
     bands = _band_payload(request.bands, band_values, [item["key"] for item in traces])
     comparison = _comparison_payload(x, baseline, target)
@@ -413,6 +423,7 @@ def _measurement_band(value: Any) -> MeasurementBand:
         "center_offset_hz",
         "integration_bandwidth_hz",
         "enabled",
+        "reference_label",
     }
     unknown = set(value) - allowed
     if unknown:
@@ -443,6 +454,24 @@ def _measurement_band(value: Any) -> MeasurementBand:
             "invalid_measurement_bands",
             "measurement-band enabled must be a boolean",
         )
+    reference_label = value.get("reference_label")
+    if reference_label is not None:
+        if not isinstance(reference_label, str) or not reference_label.strip():
+            raise WebAnalysisError(
+                "invalid_measurement_bands",
+                "measurement-band reference_label must be a non-empty string",
+            )
+        reference_label = reference_label.strip()
+        if len(reference_label) > MAX_BAND_LABEL_LENGTH:
+            raise WebAnalysisError(
+                "invalid_measurement_bands",
+                f"measurement-band reference_label exceeds {MAX_BAND_LABEL_LENGTH} characters",
+            )
+    if role == "main" and reference_label is not None:
+        raise WebAnalysisError(
+            "invalid_measurement_bands",
+            "main measurement bands cannot declare reference_label",
+        )
     return MeasurementBand(
         label=label,
         role=role,
@@ -453,16 +482,20 @@ def _measurement_band(value: Any) -> MeasurementBand:
             value.get("integration_bandwidth_hz"), "integration_bandwidth_hz"
         ),
         enabled=enabled,
+        reference_label=reference_label,
     )
 
 
 def _validate_bands(bands: Sequence[MeasurementBand], sample_rate_hz: float) -> None:
     half_rate = sample_rate_hz / 2.0
-    enabled_main = 0
+    enabled_mains = {
+        band.label.casefold(): band
+        for band in bands
+        if band.enabled and band.role == "main"
+    }
     for band in bands:
         if not band.enabled:
             continue
-        enabled_main += band.role == "main"
         lower = band.center_offset_hz - band.integration_bandwidth_hz / 2.0
         upper = band.center_offset_hz + band.integration_bandwidth_hz / 2.0
         if lower < -half_rate or upper > half_rate:
@@ -470,11 +503,19 @@ def _validate_bands(bands: Sequence[MeasurementBand], sample_rate_hz: float) -> 
                 "measurement_band_out_of_range",
                 f"measurement band {band.label!r} exceeds the Nyquist interval",
             )
-    if enabled_main > 1:
-        raise WebAnalysisError(
-            "invalid_measurement_bands",
-            "at most one enabled main measurement band is allowed",
-        )
+        if band.role == "main":
+            continue
+        if band.reference_label is not None:
+            if band.reference_label.casefold() not in enabled_mains:
+                raise WebAnalysisError(
+                    "invalid_measurement_bands",
+                    f"measurement band {band.label!r} references an unknown enabled main band",
+                )
+        elif len(enabled_mains) > 1:
+            raise WebAnalysisError(
+                "invalid_measurement_bands",
+                f"measurement band {band.label!r} requires reference_label when multiple main bands are enabled",
+            )
 
 
 def _trace_sources(
@@ -482,8 +523,8 @@ def _trace_sources(
     reference: np.ndarray,
     baseline: AnalysisRecord | None,
     target: AnalysisRecord | None,
-) -> list[tuple[str, str, int | None, np.ndarray]]:
-    values: list[tuple[str, str, int | None, np.ndarray]] = []
+) -> list[tuple[str, str, int | None, np.ndarray | None]]:
+    values: list[tuple[str, str, int | None, np.ndarray | None]] = []
     for key in requested:
         if key == "baseline_z" and baseline is not None:
             values.append(
@@ -504,6 +545,15 @@ def _trace_sources(
             )
         elif key == "reference_x":
             values.append((key, "REFERENCE · X", None, reference))
+        elif key == "target_error" and target is not None:
+            values.append(
+                (
+                    key,
+                    f"ERROR · Z{target.iteration} − X",
+                    target.iteration,
+                    None,
+                )
+            )
         elif key == "target_y" and target is not None:
             values.append(
                 (key, f"DPD DRIVE · Y{target.iteration}", target.iteration, target.y)
@@ -564,16 +614,21 @@ def _band_payload(
     trace_keys: Sequence[str],
 ) -> list[dict[str, Any]]:
     enabled = [band for band in bands if band.enabled]
-    mains = [band for band in enabled if band.role == "main"]
-    main = mains[0] if len(mains) == 1 else None
+    mains = {band.label.casefold(): band for band in enabled if band.role == "main"}
     result: list[dict[str, Any]] = []
     for band in bands:
+        reference = None
+        if band.enabled and band.role != "main":
+            if band.reference_label is not None:
+                reference = mains.get(band.reference_label.casefold())
+            elif len(mains) == 1:
+                reference = next(iter(mains.values()))
         trace_payload: dict[str, Any] = {}
         for key in trace_keys:
             power_dbfs = values.get(key, {}).get(band.label)
             entry: dict[str, float | None] = {"power_dbfs": power_dbfs}
-            if band.enabled and main is not None and power_dbfs is not None:
-                main_power = values.get(key, {}).get(main.label)
+            if reference is not None and power_dbfs is not None:
+                main_power = values.get(key, {}).get(reference.label)
                 if main_power is not None:
                     entry["relative_power_dbc"] = power_dbfs - main_power
                     if band.role == "adjacent":
@@ -582,8 +637,13 @@ def _band_payload(
         result.append(
             {
                 **band.to_dict(),
+                "resolved_reference_label": (
+                    None if reference is None else reference.label
+                ),
                 "traces": trace_payload,
-                "aclr": band.enabled and band.role == "adjacent" and main is not None,
+                "aclr": band.enabled
+                and band.role == "adjacent"
+                and reference is not None,
             }
         )
     return result

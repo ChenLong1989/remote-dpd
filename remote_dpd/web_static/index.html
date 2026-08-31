@@ -8,7 +8,7 @@
       content="Single-screen RF workbench for iterative digital predistortion control and analysis."
     />
     <title>Remote DPD RF Workbench</title>
-    <link rel="stylesheet" href="/static/styles.css?v=single-screen-3" />
+    <link rel="stylesheet" href="/static/styles.css?v=single-screen-4" />
   </head>
   <body>
     <header class="instrument-header">
@@ -50,6 +50,7 @@
           <div class="trace-bar" id="operate-trace-bar">
             <label class="trace-toggle trace-yellow"><input type="checkbox" value="baseline_z" checked />Z₀ PA OUT</label>
             <label class="trace-toggle trace-cyan"><input type="checkbox" value="target_z" checked />Zₙ PA OUT</label>
+            <label class="trace-toggle trace-purple"><input type="checkbox" value="target_error" checked />Eₙ ERROR</label>
             <label class="trace-toggle trace-gray"><input type="checkbox" value="reference_x" />X REF</label>
             <label class="trace-toggle trace-magenta"><input type="checkbox" value="target_y" />Yₙ DRIVE</label>
             <span class="trace-status" id="analysis-status">ANALYSIS STANDBY</span>
@@ -106,6 +107,7 @@
         <div class="auxiliary-tabs" role="tablist" aria-label="Auxiliary measurement">
           <span class="window-index">4</span>
           <button class="aux-tab active" data-aux-view="convergence" type="button">Convergence</button>
+          <button class="aux-tab" data-aux-view="aclr" type="button">ACLR</button>
           <button class="aux-tab" data-aux-view="amam" type="button">AM / AM</button>
           <button class="aux-tab" data-aux-view="ampm" type="button">AM / PM</button>
           <button class="aux-tab" data-aux-view="power" type="button">Power Tune</button>
@@ -165,7 +167,7 @@
           <p class="panel-note">Analysis-only values are not written to the waveform, controller, or final MAT result.</p>
           <div class="bounded-table-pane">
             <div class="measurement-band-table" role="table" aria-label="Measurement bands">
-              <div class="measurement-band-head" role="row"><span>On</span><span>Label</span><span>Role</span><span>Center Offset</span><span>Integration BW</span><span></span></div>
+              <div class="measurement-band-head" role="row"><span>On</span><span>Label</span><span>Role</span><span>Reference TX</span><span>Center Offset</span><span>Integration BW</span><span></span></div>
               <div id="measurement-band-rows"></div>
             </div>
           </div>
@@ -236,6 +238,6 @@
       <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
     </dialog>
 
-    <script src="/static/app.js?v=single-screen-3" defer></script>
+    <script src="/static/app.js?v=single-screen-4" defer></script>
   </body>
 </html>

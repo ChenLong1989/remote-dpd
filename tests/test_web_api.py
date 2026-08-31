@@ -72,7 +72,13 @@ def _analysis_profile(**overrides):
         "schema_version": 1,
         "points": 256,
         "frequency_mode": "relative",
-        "traces": ["baseline_z", "target_z", "reference_x", "target_y"],
+        "traces": [
+            "baseline_z",
+            "target_z",
+            "target_error",
+            "reference_x",
+            "target_y",
+        ],
         "bands": [
             {
                 "label": "Main",
@@ -181,8 +187,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-3")
-        script = self.client.get("/static/app.js?v=single-screen-3")
+        styles = self.client.get("/static/styles.css?v=single-screen-4")
+        script = self.client.get("/static/app.js?v=single-screen-4")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -197,7 +203,9 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-3", page.text)
+        self.assertIn("single-screen-4", page.text)
+        self.assertIn('value="target_error" checked', page.text)
+        self.assertIn('data-aux-view="aclr"', page.text)
         self.assertEqual(health.json()["status"], "ok")
         simulated = devices.json()["devices"][0]
         self.assertEqual(simulated["device_type"], "simulated")
@@ -528,6 +536,10 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(current_analysis["fft_size"], 64)
         self.assertEqual(current_analysis["comparison"]["baseline"]["iteration"], 0)
         self.assertEqual(current_analysis["comparison"]["target"]["iteration"], 2)
+        self.assertIn(
+            "target_error",
+            [trace["key"] for trace in current_analysis["traces"]],
+        )
         self.assertEqual(run_analysis["comparison"]["target"]["iteration"], 2)
         self.assertLessEqual(len(run_analysis["frequency_hz"]), 256)
         self.assertEqual(run_analysis_response.headers["cache-control"], "no-store")

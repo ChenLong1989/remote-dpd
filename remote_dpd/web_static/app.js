@@ -8,6 +8,7 @@ const CONTROL_HEADERS = {
 const TRACE_COLORS = {
   baseline_z: "#ffd400",
   target_z: "#20d8d3",
+  target_error: "#b58cff",
   reference_x: "#c1c7ca",
   target_y: "#e279d2",
 };
@@ -207,6 +208,12 @@ function drawXYPlot(canvas, series, options = {}) {
     context.lineTo(right, margins.top + plotHeight);
     context.stroke();
     context.setLineDash([]);
+    if (band.label && right - left >= 18) {
+      context.fillStyle = band.stroke || "rgba(255, 212, 0, 0.8)";
+      context.font = '7px "SFMono-Regular", Consolas, monospace';
+      context.textAlign = "center";
+      context.fillText(band.label, (left + right) / 2, margins.top + 9);
+    }
   });
   context.restore();
 
@@ -341,6 +348,7 @@ function analysisBandsForPlot(payload) {
     .map((band) => ({
       lower: frequencyOffset + band.center_offset_hz - band.integration_bandwidth_hz / 2,
       upper: frequencyOffset + band.center_offset_hz + band.integration_bandwidth_hz / 2,
+      label: band.label,
       fill: band.role === "main" ? "rgba(32, 216, 211, 0.08)" : "rgba(255, 212, 0, 0.055)",
       stroke: band.role === "main" ? "rgba(32, 216, 211, 0.42)" : "rgba(255, 212, 0, 0.35)",
     }));
@@ -512,6 +520,85 @@ function drawPowerTrace(canvas = byId("auxiliary-plot")) {
   });
 }
 
+function drawAclrTemplate(canvas = byId("auxiliary-plot")) {
+  const bands = (state.analysis?.bands || [])
+    .filter((band) => band.enabled)
+    .sort((left, right) => left.center_offset_hz - right.center_offset_hz);
+  const measured = bands.filter((band) =>
+    [band.traces?.baseline_z?.power_dbfs, band.traces?.target_z?.power_dbfs].some(
+      Number.isFinite,
+    ),
+  );
+  if (!measured.length) {
+    drawEmptyPlot(canvas, "NO ACLR TEMPLATE DATA");
+    return;
+  }
+
+  const { context, width, height } = prepareCanvas(canvas);
+  const margins = { left: 58, right: 16, top: 22, bottom: 38 };
+  const plotWidth = Math.max(1, width - margins.left - margins.right);
+  const plotHeight = Math.max(1, height - margins.top - margins.bottom);
+  const values = measured.flatMap((band) => [
+    band.traces?.baseline_z?.power_dbfs,
+    band.traces?.target_z?.power_dbfs,
+  ]).filter(Number.isFinite);
+  const yMax = Math.ceil(Math.max(...values) / 10) * 10;
+  const yMin = Math.min(yMax - 20, Math.floor(Math.min(...values) / 10) * 10);
+  const yToPixel = (value) =>
+    margins.top + ((yMax - value) / Math.max(1, yMax - yMin)) * plotHeight;
+
+  context.strokeStyle = "#25292c";
+  context.fillStyle = "#8c9397";
+  context.font = '8px "SFMono-Regular", Consolas, monospace';
+  context.textAlign = "right";
+  for (let tick = 0; tick <= 5; tick += 1) {
+    const value = yMax - ((yMax - yMin) * tick) / 5;
+    const y = yToPixel(value);
+    context.beginPath();
+    context.moveTo(margins.left, y);
+    context.lineTo(margins.left + plotWidth, y);
+    context.stroke();
+    context.fillText(value.toFixed(0), margins.left - 6, y + 3);
+  }
+
+  const groupWidth = plotWidth / measured.length;
+  const barWidth = Math.max(3, Math.min(13, groupWidth * 0.28));
+  measured.forEach((band, index) => {
+    const center = margins.left + groupWidth * (index + 0.5);
+    const baseline = band.traces?.baseline_z?.power_dbfs;
+    const target = band.traces?.target_z?.power_dbfs;
+    [
+      { value: baseline, color: TRACE_COLORS.baseline_z, offset: -barWidth },
+      { value: target, color: TRACE_COLORS.target_z, offset: 0 },
+    ].forEach((item) => {
+      if (!Number.isFinite(item.value)) return;
+      const top = yToPixel(item.value);
+      context.fillStyle = item.color;
+      context.fillRect(center + item.offset, top, barWidth, margins.top + plotHeight - top);
+    });
+    context.fillStyle = band.role === "adjacent" ? "#ffd400" : "#9ba2a6";
+    context.font = '7px "SFMono-Regular", Consolas, monospace';
+    context.textAlign = "center";
+    context.fillText(band.label, center, height - 23);
+  });
+
+  context.fillStyle = TRACE_COLORS.baseline_z;
+  context.fillRect(width - 145, 7, 10, 3);
+  context.fillStyle = "#b9bec1";
+  context.textAlign = "left";
+  context.fillText("Z₀", width - 131, 11);
+  context.fillStyle = TRACE_COLORS.target_z;
+  context.fillRect(width - 101, 7, 10, 3);
+  context.fillStyle = "#b9bec1";
+  context.fillText("Zₙ", width - 87, 11);
+  context.save();
+  context.translate(12, margins.top + plotHeight / 2);
+  context.rotate(-Math.PI / 2);
+  context.textAlign = "center";
+  context.fillText("CHANNEL POWER (dBFS)", 0, 0);
+  context.restore();
+}
+
 function stimulusResponseSeries(kind) {
   const response = state.analysis?.stimulus_response;
   const baseline = response?.baseline?.points || [];
@@ -546,6 +633,7 @@ function drawAuxiliary() {
   canvas.hidden = state.auxView === "alignment";
   const titles = {
     convergence: "Iteration NMSE",
+    aclr: "Channel Power / ACLR Template",
     amam: "AM / AM Stimulus Response",
     ampm: "AM / PM Stimulus Response",
     power: "Attenuation / Output Power",
@@ -562,6 +650,10 @@ function drawAuxiliary() {
   }
   if (state.auxView === "power") {
     drawPowerTrace(canvas);
+    return;
+  }
+  if (state.auxView === "aclr") {
+    drawAclrTemplate(canvas);
     return;
   }
   const isAmAm = state.auxView === "amam";
@@ -605,7 +697,7 @@ function renderAnalysisResults() {
   } else {
     const header = document.createElement("div");
     header.className = "band-result band-result-head";
-    ["ACLR", "BASE", "TARGET"].forEach((value) => {
+    ["ACLR dBc", "BASE", "TARGET", "IMPR"].forEach((value) => {
       const cell = document.createElement("span");
       cell.textContent = value;
       header.append(cell);
@@ -618,13 +710,22 @@ function renderAnalysisResults() {
       label.textContent = band.label;
       const base = document.createElement("span");
       const targetValue = document.createElement("span");
-      base.textContent = Number.isFinite(band.traces?.baseline_z?.aclr_db)
-        ? `${formatNumber(band.traces.baseline_z.aclr_db)} dB`
+      const improvement = document.createElement("em");
+      const baselineDbc = band.traces?.baseline_z?.relative_power_dbc;
+      const targetDbc = band.traces?.target_z?.relative_power_dbc;
+      label.textContent = band.resolved_reference_label
+        ? `${band.label} / ${band.resolved_reference_label}`
+        : band.label;
+      base.textContent = Number.isFinite(baselineDbc)
+        ? `${formatNumber(baselineDbc)} dBc`
         : "—";
-      targetValue.textContent = Number.isFinite(band.traces?.target_z?.aclr_db)
-        ? `${formatNumber(band.traces.target_z.aclr_db)} dB`
+      targetValue.textContent = Number.isFinite(targetDbc)
+        ? `${formatNumber(targetDbc)} dBc`
         : "—";
-      row.append(label, base, targetValue);
+      improvement.textContent = Number.isFinite(baselineDbc) && Number.isFinite(targetDbc)
+        ? formatSigned(baselineDbc - targetDbc, 2, "dB")
+        : "—";
+      row.append(label, base, targetValue, improvement);
       container.append(row);
     });
   }
@@ -1071,7 +1172,14 @@ function collectConfiguration() {
 }
 
 function addMeasurementBandRow(
-  band = { enabled: false, label: "Band", role: "other", center_mhz: "", bandwidth_mhz: "" },
+  band = {
+    enabled: false,
+    label: "Band",
+    role: "other",
+    reference_label: "",
+    center_mhz: "",
+    bandwidth_mhz: "",
+  },
 ) {
   const container = byId("measurement-band-rows");
   if (container.children.length >= 32) {
@@ -1081,6 +1189,7 @@ function addMeasurementBandRow(
   const row = document.createElement("div");
   row.className = "measurement-band-row";
   row.dataset.measurementBand = "1";
+  row.dataset.referenceLabel = band.reference_label || "";
   const enabled = document.createElement("input");
   enabled.type = "checkbox";
   enabled.checked = Boolean(band.enabled);
@@ -1095,10 +1204,13 @@ function addMeasurementBandRow(
   ["main", "adjacent", "other"].forEach((value) => {
     const option = document.createElement("option");
     option.value = value;
-    option.textContent = value.toUpperCase();
+    option.textContent = value === "main" ? "TX" : value.toUpperCase();
     role.append(option);
   });
   role.value = band.role;
+  const reference = document.createElement("select");
+  reference.dataset.bandField = "reference";
+  reference.setAttribute("aria-label", "Reference TX channel");
   const center = document.createElement("div");
   center.className = "unit-control";
   const centerInput = document.createElement("input");
@@ -1124,38 +1236,85 @@ function addMeasurementBandRow(
   remove.textContent = "×";
   remove.addEventListener("click", () => {
     row.remove();
+    syncMeasurementBandReferences();
     queueAnalysisRefresh(true);
   });
-  [enabled, label, role, centerInput, bandwidthInput].forEach((control) => {
+  [enabled, label, role].forEach((control) => {
+    control.addEventListener("change", () => {
+      syncMeasurementBandReferences();
+      queueAnalysisRefresh(true);
+    });
+  });
+  [reference, centerInput, bandwidthInput].forEach((control) => {
     control.addEventListener("change", () => queueAnalysisRefresh(true));
   });
-  row.append(enabled, label, role, center, bandwidth, remove);
+  row.append(enabled, label, role, reference, center, bandwidth, remove);
   container.append(row);
+  syncMeasurementBandReferences();
+}
+
+function syncMeasurementBandReferences() {
+  const rows = Array.from(document.querySelectorAll("[data-measurement-band]"));
+  const mainLabels = rows
+    .filter(
+      (row) =>
+        row.querySelector('[data-band-field="enabled"]').checked &&
+        row.querySelector('[data-band-field="role"]').value === "main",
+    )
+    .map((row) => row.querySelector('[data-band-field="label"]').value.trim())
+    .filter(Boolean);
+  rows.forEach((row) => {
+    const role = row.querySelector('[data-band-field="role"]').value;
+    const reference = row.querySelector('[data-band-field="reference"]');
+    const previous = reference.value || row.dataset.referenceLabel || "";
+    reference.replaceChildren();
+    const unavailable = document.createElement("option");
+    unavailable.value = "";
+    unavailable.textContent = role === "main" ? "—" : "Select TX";
+    reference.append(unavailable);
+    mainLabels.forEach((label) => {
+      const option = document.createElement("option");
+      option.value = label;
+      option.textContent = label;
+      reference.append(option);
+    });
+    reference.disabled = role === "main";
+    reference.value = role === "main" ? "" : previous;
+    row.dataset.referenceLabel = reference.value;
+  });
 }
 
 function initializeMeasurementBands() {
   byId("measurement-band-rows").replaceChildren();
+  Array.from({ length: 10 }, (_, index) => -90 + index * 20).forEach(
+    (center, index) => {
+      addMeasurementBandRow({
+        enabled: true,
+        label: `TX${index + 1}`,
+        role: "main",
+        reference_label: "",
+        center_mhz: String(center),
+        bandwidth_mhz: "20",
+      });
+    },
+  );
   addMeasurementBandRow({
-    enabled: false,
-    label: "Main",
-    role: "main",
-    center_mhz: "0",
-    bandwidth_mhz: "",
-  });
-  addMeasurementBandRow({
-    enabled: false,
+    enabled: true,
     label: "Adjacent L1",
     role: "adjacent",
-    center_mhz: "",
-    bandwidth_mhz: "",
+    reference_label: "TX1",
+    center_mhz: "-110",
+    bandwidth_mhz: "20",
   });
   addMeasurementBandRow({
-    enabled: false,
+    enabled: true,
     label: "Adjacent R1",
     role: "adjacent",
-    center_mhz: "",
-    bandwidth_mhz: "",
+    reference_label: "TX10",
+    center_mhz: "110",
+    bandwidth_mhz: "20",
   });
+  syncMeasurementBandReferences();
 }
 
 function resetDefaults() {
@@ -1206,6 +1365,7 @@ function collectMeasurementBands() {
     const enabled = row.querySelector('[data-band-field="enabled"]').checked;
     const label = row.querySelector('[data-band-field="label"]').value.trim();
     const role = row.querySelector('[data-band-field="role"]').value;
+    const referenceLabel = row.querySelector('[data-band-field="reference"]').value.trim();
     const centerRaw = row.querySelector('[data-band-field="center"]').value.trim();
     const bandwidthRaw = row.querySelector('[data-band-field="bandwidth"]').value.trim();
     if (!enabled && (!centerRaw || !bandwidthRaw)) return;
@@ -1216,13 +1376,15 @@ function collectMeasurementBands() {
       if (enabled) throw new Error(`Measurement band ${label} requires a finite center and positive bandwidth.`);
       return;
     }
-    bands.push({
+    const band = {
       label,
       role,
       center_offset_hz: center * 1e6,
       integration_bandwidth_hz: bandwidth * 1e6,
       enabled,
-    });
+    };
+    if (referenceLabel) band.reference_label = referenceLabel;
+    bands.push(band);
   });
   return bands;
 }

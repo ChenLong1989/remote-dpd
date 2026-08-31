@@ -110,7 +110,7 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 ## 6. 页面交互
 
-单页控制台使用固定 `100dvh` 仪表布局，document 不滚动。persistent header 持续显示 TX/RX/PWR、Controller、RF Output、中心频率、采样率、功率、衰减、迭代以及 `CONFIG/RUNS/RF OFF`。主区只同时显示 `Z₀/Zₙ` 频谱、核心 DPD result 和唯一主 CTA；底部单一辅助 pane 在 Convergence、AM/AM、AM/PM、Power Tune、Alignment 间切换。
+单页控制台使用固定 `100dvh` 仪表布局，document 不滚动。persistent header 持续显示 TX/RX/PWR、Controller、RF Output、中心频率、采样率、功率、衰减、迭代以及 `CONFIG/RUNS/RF OFF`。主区同时显示 `Z₀/Zₙ/Eₙ` 频谱、核心 DPD result 和唯一主 CTA；底部单一辅助 pane 在 Convergence、ACLR、AM/AM、AM/PM、Power Tune、Alignment 间切换。
 
 Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Simulation DUT 页签分组。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect。
 
@@ -144,7 +144,7 @@ header、主频谱、核心结果/控制和辅助测量构成固定单屏。`RF 
 
 ### 8.3 Trace、频谱与单位
 
-主频谱默认比较第 0 轮反馈 `Z₀` 与当前或用户选择轮反馈 `Zₙ`，用于直接观察 DPD 前后的 PA 输出改善；`x` reference 和对应轮 `y` DPD drive 作为可选 trace。trace 标签必须写明逻辑含义和轮次，不能只显示单字母颜色图例。
+主频谱默认比较第 0 轮反馈 `Z₀`、当前或用户选择轮反馈 `Zₙ`，并显示 `Eₙ = Zₙ - X` error spectrum，用于同时观察 DPD 前后的 PA 输出和目标轮带内 waveform distortion。服务端从完整、已预处理的目标轮 `z` 与固定 reference `x` 直接相减后执行同一 DFT；error trace 随 Target iteration 更新，单位为 `dBFS/bin`，不代表 demod EVM。`x` reference 和对应轮 `y` DPD drive 作为可选 trace，最大可同时请求 5 条。trace 标签必须写明逻辑含义和轮次，不能只显示单字母颜色图例。
 
 频谱基于完整周期的矩形窗 DFT，先 `fftshift` 再按采样率生成频率轴。归一化定义为 `X[k] / N`，单位幅度复正弦落在单个 DFT bin 时为 `0 dBFS/bin`；显示 `FFT Size=N` 和 `Bin BW=sample_rate/N`。相对模式以 baseband center 为 `0 Hz`，绝对模式在频率轴加有效中心频率。系统不把 Bin BW 标成 RBW，也不显示没有物理实现的 VBW、Sweep Time、Max Hold 或校准 `dBm/Hz`。
 
@@ -164,7 +164,9 @@ profile 包含显示点数、相对/绝对频率模式和有界 measurement-band
 | `integration_bandwidth_hz` | 正有限积分带宽 |
 | `enabled` | 是否参与绘图和积分 |
 
-页面默认创建 `Main`、`Adjacent L1`、`Adjacent R1`，允许增加 L2/R2、多载波和不对称 band。只有恰好一个启用的 main band 时才计算相对结果；每个 band 返回积分 `power_dbfs`，adjacent/other 同时返回 `relative_power_dbc = P_band - P_main`，adjacent 另返回正值 `aclr_db = P_main - P_band`。未配置、缺少 main 或没有 adjacent 时不猜测带宽，ACLR 标记为 unavailable，其他分析继续工作。
+页面默认创建一个多载波 ACLR template：中心 `-90` 到 `+90 MHz` 的 10 个 20 MHz `role=main` TX channel，以及中心 `-110/+110 MHz` 的两个 20 MHz adjacent，分别通过 `reference_label` 引用最左 `TX1` 和最右 `TX10`。允许多个启用的 main；adjacent/other 在多个 main 下必须显式引用一个启用的 main，不按距离猜测。只有一个 main 时省略 reference 仍按旧行为计算，保持旧 profile 兼容。
+
+每个 band 返回积分 `power_dbfs`；有 reference 的 adjacent/other 返回 `relative_power_dbc = P_band - P_reference`，adjacent 另返回正值 `aclr_db = P_reference - P_band`。频谱显示 channel boundary、shading 和标签；Auxiliary ACLR tab 显示 `Z₀/Zₙ` grouped channel-power bar；结果表对 adjacent 显示负值 `dBc` 和改善量。TX channel power 使用数字 `dBFS`，不显示未校准 dBm。该模板仍为逐请求 Web Analysis Profile，不进入运行配置或结果契约；用户可在 Configuration 中编辑 TX/adjacent/reference。
 
 band 区间不得越过 `[-sample_rate/2, sample_rate/2)`；边界与 DFT bin 不完全重合时按 bin 覆盖比例积分，避免仅用 bin center 导致宽度跳变。最大 band 数、label 长度、显示点数和嵌套节点均使用独立硬上限。
 
@@ -198,7 +200,7 @@ band 区间不得越过 `[-sample_rate/2, sample_rate/2)`；边界与 DFT bin �
 - 对输入样点、请求 band、trace、显示点和并发等待设置硬限制，客户端断开不能造成无限排队；
 - 保证 command、SSE/session polling 和 safety stop 不等待分析 gate；分析失败只影响分析响应，不改变 controller/run 状态。
 
-profile 最多包含 32 个 band、4 条 trace 和 4096 个频谱显示点。最大允许 waveform 仍为 1000 万 complex 样点；实现使用标量 bin 边界积分，避免为每个 band 建立整轴权重数组。完整频谱绝不从稀疏时域 preview 估计。
+profile 最多包含 32 个 band、5 条 trace 和 4096 个频谱显示点。最大允许 waveform 仍为 1000 万 complex 样点；实现使用标量 bin 边界积分，避免为每个 band 建立整轴权重数组。完整频谱绝不从稀疏时域 preview 估计。单并发分析 gate、逐 trace 释放和 16 项/16 MiB 有界最终结果缓存保持不变；1000 万点、5 trace、12 band 和 4096 显示点的本机基准为 5.70 秒、峰值 RSS `1400032 KiB`。
 
 ### 8.8 兼容性与验收
 
@@ -219,9 +221,9 @@ profile 最多包含 32 个 band、4 条 trace 和 4096 个频谱显示点。最
 | 区域 | 固定内容 |
 | --- | --- |
 | Header/status | 产品、TX/RX/PWR、Controller、RF Output、Fc、Fs、Pout、Att、Iteration、Config、Runs、RF abort |
-| Main spectrum | `Z₀/Zₙ`、可选 `x/y`、Marker、Peak Search、频率模式和 display controls |
+| Main spectrum | `Z₀/Zₙ/Eₙ`、可选 `x/y`、Marker、Peak Search、频率模式和 display controls |
 | Result/control | NMSE、Pout、PAPR、ACLR、状态/错误、唯一主 CTA、Expert 入口 |
-| Auxiliary | 单一绘图区和 `Convergence/AM-AM/AM-PM/Power/Alignment` tab |
+| Auxiliary | 单一绘图区和 `Convergence/ACLR/AM-AM/AM-PM/Power/Alignment` tab |
 
 旧 `OPERATE/CONFIGURATION/DPD ANALYSIS/RUNS` 顶层 workspace、同时显示的多窗口和 maximize 交互删除。Auxiliary tab 只切换同一个有界 pane 的内容；已有 analysis 数据和选定 trace/iteration 不因切换而重新提交控制命令。
 
