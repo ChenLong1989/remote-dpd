@@ -225,7 +225,8 @@ class WebAPITests(unittest.TestCase):
                 {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
             ],
         )
-        self.assertEqual(default_configuration["max_iterations"], 5)
+        self.assertEqual(default_configuration["max_iterations"], 15)
+        self.assertEqual(default_configuration["runtime_config"]["mu"], 0.35)
         schema_capture = next(
             field
             for field in simulated["schema"]["fields"]

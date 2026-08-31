@@ -114,7 +114,7 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Simulation DUT 页签分组。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect。
 
-新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用十段平均、1000 万单次抓取上限和 5 次 ILC。设备 schema、文件入口和非 Web 消费者仍保留各自原默认值。
+新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC。设备 schema、文件入口和非 Web 消费者仍保留各自原默认值。PA v2 在 15 次、`mu=0.5` 时会于第 13 个候选触发数字峰值安全失败；`mu=0.35` 的完整实测可完成第 15 轮，最终峰值 `0.98509`。数字安全上限和 runtime 通用默认保持不变。
 
 页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set 和相对/绝对频率，不引入 Node 构建链或外部 CDN。
 
