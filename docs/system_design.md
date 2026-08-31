@@ -203,7 +203,7 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 
 ### Web 射频分析边界
 
-独立只读的 Web 射频分析层从当前 controller snapshot 或 cleanup guard 内的历史 `RunStore` 读取不可变 `x/y/z`，计算完整周期频谱、measurement-band 功率、ACLR、PAPR 以及有界 AM/AM、AM/PM 数据；它不属于 controller、预处理器或 DPD runtime，不持有设备对象，也不能改变 RF、命令、run manifest 或正式结果。
+独立只读的 Web 射频分析层从当前 controller snapshot 或 cleanup guard 内的历史 `RunStore` 读取不可变 `x/y/z`，计算完整周期 `Z₀/Zₙ/(Zₙ-X)` 频谱、支持多 TX reference 的 measurement-band/ACLR 功率、PAPR 以及有界 AM/AM、AM/PM 数据；它不属于 controller、预处理器或 DPD runtime，不持有设备对象，也不能改变 RF、命令、run manifest 或正式结果。
 
 `AnalysisProfile` 是逐请求提交的版本化 Web 查询，包含相对/绝对频率显示和任意有界 measurement-band 表；它不写入原 waveform MAT、文件命令 schema、controller 配置或正式结果 MAT，也不提供跨会话 preset。频谱使用 `dBFS/bin`，物理总功率继续来自 power sensor `dBm`，在没有校准 IQ 标度时不得推导 `dBm/Hz`。EVM、连续扫频、RBW/VBW 和频谱 mask 不在当前范围。
 

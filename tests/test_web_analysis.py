@@ -99,6 +99,93 @@ class WebAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(adjacent["target_z"]["aclr_db"], 40.0, places=8)
         self.assertTrue(result["aclr_available"])
 
+    def test_target_error_trace_uses_complete_aligned_waveform_difference(self):
+        sample_count = 1024
+        reference = _tone(sample_count, 50)
+        error = _tone(sample_count, 150, 0.1)
+        target = AnalysisRecord(7, reference, reference + error)
+
+        result = analyze_waveforms(
+            request=_request(traces=["target_error"]),
+            reference=reference,
+            baseline=None,
+            target=target,
+            sample_rate_hz=1024.0,
+            center_frequency_hz=3.5e9,
+        )
+
+        trace = result["traces"][0]
+        self.assertEqual(trace["key"], "target_error")
+        self.assertEqual(trace["label"], "ERROR · Z7 − X")
+        self.assertEqual(trace["iteration"], 7)
+        self.assertAlmostEqual(max(trace["values_dbfs"]), -20.0, places=8)
+
+    def test_multicarrier_aclr_uses_each_adjacent_reference_tx(self):
+        sample_count = 1024
+        left_main = _tone(sample_count, -100)
+        right_main = _tone(sample_count, 100, 0.5)
+        left_adjacent = _tone(sample_count, -200, 0.1)
+        right_adjacent = _tone(sample_count, 200, 0.05)
+        z = left_main + right_main + left_adjacent + right_adjacent
+        record = AnalysisRecord(0, left_main + right_main, z)
+        request = _request(
+            traces=["baseline_z"],
+            bands=[
+                {
+                    "label": "TX1",
+                    "role": "main",
+                    "center_offset_hz": -100.0,
+                    "integration_bandwidth_hz": 1.0,
+                    "enabled": True,
+                },
+                {
+                    "label": "TX2",
+                    "role": "main",
+                    "center_offset_hz": 100.0,
+                    "integration_bandwidth_hz": 1.0,
+                    "enabled": True,
+                },
+                {
+                    "label": "Adjacent L1",
+                    "role": "adjacent",
+                    "center_offset_hz": -200.0,
+                    "integration_bandwidth_hz": 1.0,
+                    "enabled": True,
+                    "reference_label": "TX1",
+                },
+                {
+                    "label": "Adjacent R1",
+                    "role": "adjacent",
+                    "center_offset_hz": 200.0,
+                    "integration_bandwidth_hz": 1.0,
+                    "enabled": True,
+                    "reference_label": "TX2",
+                },
+            ],
+        )
+
+        result = analyze_waveforms(
+            request=request,
+            reference=left_main + right_main,
+            baseline=record,
+            target=None,
+            sample_rate_hz=1024.0,
+            center_frequency_hz=3.5e9,
+        )
+
+        left = result["bands"][2]
+        right = result["bands"][3]
+        self.assertEqual(left["resolved_reference_label"], "TX1")
+        self.assertEqual(right["resolved_reference_label"], "TX2")
+        self.assertAlmostEqual(
+            left["traces"]["baseline_z"]["relative_power_dbc"], -20.0, places=8
+        )
+        self.assertAlmostEqual(
+            right["traces"]["baseline_z"]["relative_power_dbc"],
+            -20.0,
+            places=8,
+        )
+
     def test_partial_bin_overlap_is_integrated_proportionally(self):
         sample_count = 1024
         x = _tone(sample_count, 0)
@@ -219,9 +306,33 @@ class WebAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(middle["phase_degrees"], 15.0, places=8)
 
     def test_profile_and_band_validation_is_strict(self):
+        five_traces = [
+            "baseline_z",
+            "target_z",
+            "target_error",
+            "reference_x",
+            "target_y",
+        ]
+        self.assertEqual(
+            AnalysisRequest.from_payload({"traces": five_traces}).traces,
+            tuple(five_traces),
+        )
+        with self.assertRaisesRegex(WebAnalysisError, "at most 5 traces"):
+            AnalysisRequest.from_payload({"traces": [*five_traces, "baseline_z"]})
         invalid_payloads = [
             {"traces": ["unknown"]},
             {"traces": ["reference_x", "reference_x"]},
+            {
+                "bands": [
+                    {
+                        "label": "Main",
+                        "role": "main",
+                        "center_offset_hz": 0.0,
+                        "integration_bandwidth_hz": 10.0,
+                        "reference_label": "Main",
+                    }
+                ]
+            },
             {
                 "bands": [
                     {
@@ -252,12 +363,46 @@ class WebAnalysisTests(unittest.TestCase):
                     "center_offset_hz": 20.0,
                     "integration_bandwidth_hz": 10.0,
                 },
+                {
+                    "label": "Adjacent",
+                    "role": "adjacent",
+                    "center_offset_hz": 40.0,
+                    "integration_bandwidth_hz": 10.0,
+                },
             ]
         )
         x = _tone(512, 0)
-        with self.assertRaisesRegex(WebAnalysisError, "at most one enabled main"):
+        with self.assertRaisesRegex(WebAnalysisError, "requires reference_label"):
             analyze_waveforms(
                 request=request,
+                reference=x,
+                baseline=None,
+                target=None,
+                sample_rate_hz=512.0,
+                center_frequency_hz=3.5e9,
+            )
+
+        unknown_reference = _request(
+            traces=["reference_x"],
+            bands=[
+                {
+                    "label": "Main",
+                    "role": "main",
+                    "center_offset_hz": 0.0,
+                    "integration_bandwidth_hz": 10.0,
+                },
+                {
+                    "label": "Adjacent",
+                    "role": "adjacent",
+                    "center_offset_hz": 20.0,
+                    "integration_bandwidth_hz": 10.0,
+                    "reference_label": "Missing",
+                },
+            ],
+        )
+        with self.assertRaisesRegex(WebAnalysisError, "unknown enabled main"):
+            analyze_waveforms(
+                request=unknown_reference,
                 reference=x,
                 baseline=None,
                 target=None,

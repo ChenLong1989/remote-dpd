@@ -122,6 +122,7 @@ input:disabled { color: #8d9498; background: #292d30; }
 .trace-toggle input { width: 11px; min-height: 11px; margin: 0; accent-color: currentColor; }
 .trace-yellow { color: var(--yellow); }
 .trace-cyan { color: var(--cyan); }
+.trace-purple { color: #b58cff; }
 .trace-gray { color: #c1c7ca; }
 .trace-magenta { color: var(--magenta); }
 .trace-status { margin-left: auto; overflow: hidden; color: #92999d; font: 8px "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -149,9 +150,10 @@ canvas { display: block; width: 100%; height: 100%; min-height: 0; background: v
 .result-table em { color: var(--green); font-style: normal; }
 .band-result-list { min-height: 0; padding: 0 7px 5px; overflow: auto; }
 .band-result-list p { padding: 8px 0; color: #92999d; font-size: 8px; }
-.band-result { display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr; align-items: center; min-height: 23px; border-bottom: 1px solid #3d4246; font: 8px "SFMono-Regular", Consolas, monospace; }
+.band-result { display: grid; grid-template-columns: 1.2fr repeat(3, 0.8fr); align-items: center; min-height: 23px; border-bottom: 1px solid #3d4246; font: 8px "SFMono-Regular", Consolas, monospace; }
 .band-result strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.band-result span { text-align: right; }
+.band-result span, .band-result em { text-align: right; }
+.band-result em { color: var(--green); font-style: normal; }
 .band-result-head { min-height: 18px; color: #81888c; font-size: 7px; font-weight: 700; }
 .band-result-head span:first-child { text-align: left; }
 .control-window { grid-template-rows: 38px auto 42px 32px minmax(28px, 1fr); padding-bottom: 6px; }
@@ -230,7 +232,7 @@ canvas { display: block; width: 100%; height: 100%; min-height: 0; background: v
 .bounded-table-pane { max-height: 315px; overflow: auto; border: 1px solid #484e52; background: #24282c; }
 .coefficient-pane { max-height: 188px; }
 .measurement-band-table, .coefficient-table { min-width: 0; }
-.measurement-band-head, .measurement-band-row { display: grid; grid-template-columns: 40px 1.15fr 0.75fr 1fr 1fr 32px; align-items: center; gap: 5px; padding: 4px 6px; }
+.measurement-band-head, .measurement-band-row { display: grid; grid-template-columns: 40px 1fr 0.65fr 0.9fr 0.95fr 0.95fr 32px; align-items: center; gap: 5px; padding: 4px 6px; }
 .coefficient-head, .coefficient-row { display: grid; grid-template-columns: 0.65fr 0.75fr 1fr 1fr 32px; align-items: center; gap: 5px; padding: 4px 6px; }
 .measurement-band-head, .coefficient-head { position: sticky; z-index: 2; top: 0; min-height: 25px; background: #191c1f; color: #898f94; font-size: 7px; font-weight: 700; text-transform: uppercase; }
 .measurement-band-row, .coefficient-row { min-height: 35px; border-top: 1px solid #41474b; }

@@ -57,7 +57,7 @@ remote-dpd \
 - connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 分步操作和一键自动闭环；
 - 默认 simulated bench 与首个 waveform 的一键完整闭环、固定 RF abort、controller/channel 状态、功率调节和对齐诊断；
 - 全新页面从服务端获得确定的 Web quick-start profile，不读取浏览器存储或历史 run；当前 profile 使用 `491.52 MS/s`、十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC；
-- 完整周期 `Z₀/Zₙ` 频谱、Trace/Marker、measurement-band、ACLR、PAPR、AM/AM、AM/PM 和 NMSE 改善；
+- 完整周期 `Z₀/Zₙ/Eₙ` 频谱、Trace/Marker、默认 10TX+2 adjacent ACLR 模板、分 reference 的 dBc/channel-power bar、PAPR、AM/AM、AM/PM 和 NMSE 改善；
 - 临时 run、任意历史轮次重新分析、结构化事件和最终 MAT 下载。
 
 可信局域网可显式启动：
