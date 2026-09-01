@@ -14,7 +14,12 @@ from typing import Any
 
 import numpy as np
 
-from .controller import ControllerSnapshot, IterationRecord
+from .controller import (
+    DEFAULT_NORMALIZE_REFERENCE_RMS,
+    DEFAULT_REFERENCE_TARGET_RMS_DBFS,
+    ControllerSnapshot,
+    IterationRecord,
+)
 from .device import (
     DeviceConfig,
     DeviceParameterSchema,
@@ -587,6 +592,8 @@ def _web_default_configuration(
     return {
         "device_type": device_type,
         "device_config": common,
+        "normalize_reference_rms": DEFAULT_NORMALIZE_REFERENCE_RMS,
+        "reference_target_rms_dbfs": DEFAULT_REFERENCE_TARGET_RMS_DBFS,
         "runtime_name": "basic_ilc",
         "runtime_config": {"mu": ilc_mu},
         "max_iterations": max_iterations,
@@ -736,6 +743,11 @@ def snapshot_payload(snapshot: ControllerSnapshot) -> dict[str, Any]:
         "latest_power_dbm": _finite_or_none(snapshot.latest_power_dbm),
         "completed_at": snapshot.completed_at,
         "reference_sample_count": None if snapshot.x is None else int(snapshot.x.size),
+        "reference_normalization": (
+            None
+            if snapshot.reference_normalization is None
+            else snapshot.reference_normalization.to_dict()
+        ),
         "record_count": len(snapshot.records),
         "rf_config": rf_config,
         "records": records,

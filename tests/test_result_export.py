@@ -114,12 +114,26 @@ class FinalResultExportTests(unittest.TestCase):
         self.assertEqual(metrics["gain_correction"], self.snapshot.gain_correction)
         self.assertEqual(metrics["capture_segment_count"], 3)
         self.assertEqual(metrics["capture_batch_count"], 2)
+        self.assertEqual(
+            metrics["source_rms_dbfs"],
+            self.snapshot.reference_normalization.source_rms_dbfs,
+        )
+        self.assertEqual(
+            metrics["reference_rms_dbfs"],
+            self.snapshot.reference_normalization.effective_rms_dbfs,
+        )
+        self.assertEqual(
+            metrics["reference_scale_db"],
+            self.snapshot.reference_normalization.scale_db,
+        )
 
         config = json.loads(payload["config"])
         self.assertEqual(config["device_type"], "simulated")
         self.assertEqual(config["runtime_name"], "basic_ilc")
         self.assertEqual(config["runtime_config"], {"mu": 0.5})
         self.assertEqual(config["max_iterations"], 2)
+        self.assertTrue(config["normalize_reference_rms"])
+        self.assertEqual(config["reference_target_rms_dbfs"], -15.0)
         self.assertIn("pa_coefficients", config["device_config"]["device_options"])
         self.assertIn("system_gain_db", config["device_config"]["device_options"])
         parsed = _parse_config_json(payload["config"])
@@ -269,6 +283,14 @@ class FinalResultExportTests(unittest.TestCase):
                 "y": np.full(payload["y"].shape, complex(float("nan"), 0.0)),
             },
             "wrong status": {**payload, "status": "failed"},
+            "normalization mismatch": {
+                **payload,
+                "metrics": {
+                    **payload["metrics"],
+                    "reference_scale_db": payload["metrics"]["reference_scale_db"]
+                    + 1.0,
+                },
+            },
         }
         with tempfile.TemporaryDirectory() as directory:
             from scipy.io import savemat
@@ -280,6 +302,35 @@ class FinalResultExportTests(unittest.TestCase):
                     savemat(target, invalid)
                     with self.assertRaises(ResultExportError):
                         load_final_payload(target)
+
+    def test_schema_one_result_remains_readable_as_legacy_unconditioned_data(self):
+        payload = build_final_payload(self.snapshot)
+        legacy_config = json.loads(payload["config"])
+        legacy_config.pop("normalize_reference_rms")
+        legacy_config.pop("reference_target_rms_dbfs")
+        legacy_metrics = dict(payload["metrics"])
+        legacy_metrics.pop("source_rms_dbfs")
+        legacy_metrics.pop("reference_rms_dbfs")
+        legacy_metrics.pop("reference_scale_db")
+        legacy_payload = {
+            **payload,
+            "schema_version": 1,
+            "config": json.dumps(legacy_config, sort_keys=True),
+            "metrics": legacy_metrics,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            from scipy.io import savemat
+
+            target = Path(directory) / "legacy.mat"
+            savemat(target, legacy_payload)
+            loaded = load_final_payload(target)
+
+        self.assertEqual(loaded["schema_version"], 1)
+        self.assertNotIn(
+            "normalize_reference_rms",
+            json.loads(loaded["config"]),
+        )
 
 
 if __name__ == "__main__":

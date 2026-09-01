@@ -8,7 +8,20 @@
 
 - 已校验的 `DeviceConfig`；
 - runtime 注册名和递归不可变的 runtime 配置，默认是 `basic_ilc` 与 `mu=0.5`；
-- 正整数 `max_iterations`。
+- 正整数 `max_iterations`；
+- `normalize_reference_rms` 开关，默认 `true`；
+- `reference_target_rms_dbfs`，默认 `-15.0`，允许有限 `[-120, 0] dBFS`。
+
+Controller 保留只读源波形，并从源波形一次性生成生效 `x`：
+
+```text
+source_rms = sqrt(mean(abs(source) ** 2))
+target_rms = 10 ** (reference_target_rms_dbfs / 20)
+scale = target_rms / source_rms
+x = source * scale
+```
+
+关闭归一化时 `scale=1`。缩放是整条复数波形的单一正实数乘法，不改变相位、频谱形状、PAPR 或样点数。应用新配置时始终从源波形重算，避免重复缩放并允许切换开关/目标。只有生效 `x` 接受既有峰值安全检查并成为 `y₀`、runtime/预处理参考、snapshot 和存储 reference；系统不削峰。source 必须一维、非空、有限且非零 RMS，开启归一化时允许 source 原始峰值超过满量程，只要生效 `x` 最终通过安全检查。
 
 应用配置时，控制器先通过 `RFBench.parameter_schema` 校验专属配置并补齐所有默认项，再把这份实际生效配置交给设备并保存到 snapshot。`ClosedLoopConfig.to_dict()` 返回严格 JSON 结构；复数和 NumPy array 使用带 `$type`、dtype、shape 和 data 的显式表示。array 只接受 bool、常规精度数值/复数和 Unicode dtype，避免产生无法可靠序列化的 bytes、datetime、structured 或扩展精度标量。
 
@@ -40,7 +53,7 @@ stateDiagram-v2
 
 控制器还公开 `IDLE`、`READY`、`POWER_TUNING`、`POWER_READY`、`CALIBRATING`、`CALIBRATED`、`RUNNING`、`STOPPING`、`COMPLETED`、`STOPPED` 和 `FAILED` 全部枚举值。
 
-`READY` 要求设备已连接并应用配置，同时已加载参考 `x`。修改配置或参考会先停止发射，重建 runtime，并清除功率锁定、固定增益和全部迭代记录。换入新 `x` 后首次启动会在停止状态显式恢复 `initial_attenuation_db`，再上传和发射，禁止新波形短暂沿用旧任务的较小锁定衰减；只有同一个已经调功率的 `x` 在 `POWER_READY` 状态停止后重启时才保留锁定值。运行中修改被单操作锁或状态检查拒绝。
+`READY` 要求设备已连接并应用配置，同时已形成生效参考 `x`。load-before-config 使用默认 `true/-15 dBFS` 形成暂定 `x`；后续配置仍从保留的 source 重算。修改配置或参考会先停止发射，重建 runtime，并清除功率锁定、固定增益和全部迭代记录。换入新 `x` 后首次启动会在停止状态显式恢复 `initial_attenuation_db`，再上传和发射，禁止新波形短暂沿用旧任务的较小锁定衰减；只有同一个已经调功率的 `x` 在 `POWER_READY` 状态停止后重启时才保留锁定值。运行中修改被单操作锁或状态检查拒绝。
 
 ## 3. 分步与自动命令
 
@@ -101,7 +114,7 @@ controller 会保留第 0 轮至第 N 轮的波形和诊断，因此还要求 `l
 - 数字安全报告；
 - 完整预处理结果和 runtime 指标。
 
-`ControllerSnapshot` 提供一致的状态、设备注册名、连接/配置/发射标记、当前操作、停止标记、最大/当前轮次、固定增益、锁定衰减、最近一次实际监控功率、参考安全报告、全部已提交记录、功率调节轨迹、终态 UTC 时间和最后结构化错误。最近功率独立于已提交记录，因此功率越界或后续抓取失败时仍保留触发本轮行为的读数。`y`/`z` 属性只引用最新完整记录。
+`ControllerSnapshot` 提供一致的状态、设备注册名、连接/配置/发射标记、当前操作、停止标记、最大/当前轮次、固定增益、锁定衰减、最近一次实际监控功率、参考安全报告、reference normalization 报告、全部已提交记录、功率调节轨迹、终态 UTC 时间和最后结构化错误。归一化报告包含开关、source/effective RMS 及 dBFS、目标、线性比例和 scale dB。最近功率独立于已提交记录，因此功率越界或后续抓取失败时仍保留触发本轮行为的读数。`y`/`z` 属性只引用最新完整记录。
 
 `completed_at` 在控制器实际进入 `COMPLETED`、`STOPPED` 或 `FAILED` 时写入，并在该终态内保持不变；复位、换参考或重新应用配置会随运行状态一起清除它。正式结果即使稍后才导出，也使用该真实终态时间。
 

@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .controller import (
+    DEFAULT_NORMALIZE_REFERENCE_RMS,
+    DEFAULT_REFERENCE_TARGET_RMS_DBFS,
     ClosedLoopConfig,
     ClosedLoopController,
     ControllerSnapshot,
@@ -58,6 +60,8 @@ _CONFIG_FIELDS = frozenset(
     {
         "device_type",
         "device_config",
+        "normalize_reference_rms",
+        "reference_target_rms_dbfs",
         "runtime_name",
         "runtime_config",
         "max_iterations",
@@ -657,9 +661,11 @@ class FileCommandProcessor:
         with self._lock:
             if self._recorder is not None or self._run_store is None:
                 return
-            config = self._configuration
-            reference = self._x
+            controller = self._controller
             store = self._run_store
+        snapshot = None if controller is None else controller.snapshot()
+        config = None if snapshot is None else snapshot.config
+        reference = None if snapshot is None else snapshot.x
         if config is None or reference is None:
             return
         recorder = store.create_run(config, reference, run_id=command_id)
@@ -687,8 +693,8 @@ class FileCommandProcessor:
         with self._lock:
             store = self._run_store
             previous = self._recorder
-            config = self._configuration
-            reference = self._x
+        config = snapshot.config
+        reference = snapshot.x
         if store is None:
             return
         if config is None or reference is None:
@@ -2182,12 +2188,22 @@ def _parse_config_json(value: str) -> ParsedConfiguration:
     max_iterations = raw.get("max_iterations", 10)
     if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):
         raise FileCommandError("invalid_config", "max_iterations must be an integer")
+    normalize_reference_rms = raw.get(
+        "normalize_reference_rms",
+        DEFAULT_NORMALIZE_REFERENCE_RMS,
+    )
+    reference_target_rms_dbfs = raw.get(
+        "reference_target_rms_dbfs",
+        DEFAULT_REFERENCE_TARGET_RMS_DBFS,
+    )
 
     try:
         decoded_device = _decode_typed_json(device_values, "device_config")
         device_config = DeviceConfig(**decoded_device)
         closed_loop = ClosedLoopConfig(
             device_config=device_config,
+            normalize_reference_rms=normalize_reference_rms,
+            reference_target_rms_dbfs=reference_target_rms_dbfs,
             runtime_name=runtime_name,
             runtime_config=decoded_runtime,
             max_iterations=max_iterations,

@@ -121,6 +121,8 @@ flowchart LR
 
 `DeviceConfig` 保存中心频率、采样率、通道、触发、平均段数、目标/安全功率、衰减范围、稳定时间、调节次数、调用超时和递归冻结的专属配置。设备 schema 校验并补齐 adapter 默认项，controller snapshot 保存实际生效值。
 
+`ClosedLoopConfig` 提供默认开启的 reference RMS conditioning：源 IQ 进入 controller 后按配置从完整复数周期计算一次统一比例，生成生效 `x`，再依次进入数字安全、功率调节、预处理和 DPD runtime。文件与 Web 只传源波形和配置，不各自缩放；运行存储、分析和正式结果使用生效 `x`。默认数字目标为 `-15 dBFS`，公共默认物理目标功率为 `-15 dBm`；两个标度各自记录，数字归一化不替代设备侧功率控制。
+
 当前注册表内置 `simulated`。仿真设备使用周期记忆多项式：
 
 ```text
@@ -161,7 +163,7 @@ runtime step
 -> 原子追加 IterationRecord
 ```
 
-数字峰值限制为 `0 dBFS`，候选 RMS 不得超过 `RMS(x)+2 dB`；系统禁止 AGC、自动归一化和静默削峰。物理功率监控超过绝对上限时不抓反馈。
+数字峰值限制为 `0 dBFS`，候选 RMS 不得超过 `RMS(x)+2 dB`；除明确配置的 reference RMS conditioning 外，系统禁止隐式 AGC、runtime 再归一化和静默削峰。物理功率监控超过绝对上限时不抓反馈。
 
 控制器状态为 `IDLE/READY/POWER_TUNING/POWER_READY/CALIBRATING/CALIBRATED/RUNNING/STOPPING/COMPLETED/STOPPED/FAILED`。非阻塞单操作锁拒绝并发修改命令；stop 使用 Event 在设备调用边界取消。正常、停止和错误终态都安全停止 RF 并关闭 runtime。
 
@@ -173,7 +175,7 @@ runtime step
 
 新 run 创建后自动获得 active guard；终态成功落 manifest 后释放。指向同一 root 的多个 `RunStore` 共享清理锁和 guard。完成 run 按“完整索引写入 `finalizing` manifest → `final_result.mat` 缓存 → `completed` manifest”两阶段提交。export guard 和 active guard 都阻止清理；默认按 manifest `updated` 保留 7 天，周期线程每 24 小时清理一次，只删除通过 manifest 和路径验证的受控直接子目录。
 
-最终 MAT 只允许从 `COMPLETED` snapshot 生成，固定包含 `schema_version/x/y/z/metrics/config/status/completed_at`。`x/y/z` 为复数列向量；`config` 是可由 MATLAB `jsondecode` 读取、包含 `device_type` 的严格 JSON；`completed_at` 是 controller 实际进入终态的时间；正式结果不包含迭代历史。
+最终 MAT 只允许从 `COMPLETED` snapshot 生成，schema 2 固定包含 `schema_version/x/y/z/metrics/config/status/completed_at`，reader/recovery 兼容旧 schema 1。`x` 是 RMS conditioning 后的生效参考，`y/z` 是最终实际评价轮的复数列向量；`config` 是可由 MATLAB `jsondecode` 读取、包含 `device_type` 和归一化配置的严格 JSON；metrics 记录 source/effective RMS 与 scale；`completed_at` 是 controller 实际进入终态的时间；正式结果不包含迭代历史。
 
 ## 9. 文件命令协议
 

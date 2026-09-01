@@ -58,11 +58,15 @@
 {
   "device_type": "simulated",
   "device_config": {},
+  "normalize_reference_rms": true,
+  "reference_target_rms_dbfs": -15.0,
   "runtime_name": "basic_ilc",
   "runtime_config": {"mu": 0.5},
   "max_iterations": 5
 }
 ```
+
+两项 reference normalization 字段是 schema 1 `config_json` 的可选扩展；缺省按 `true/-15.0 dBFS`。Processor 保留源波形以支持先 load 后 configure 和后续重配，但 controller 统一形成生效 `x`，run recorder 只保存 controller snapshot 的生效 `x`。归一化关闭或结果峰值超限时继续 fail closed，文件入口不缩放或削峰。需要复现升级前输入幅度的生产者应显式传 `normalize_reference_rms=false`。
 
 `device_config` 字段名必须属于 `DeviceConfig`，设备专属值位于其中的 `device_options`。设备 schema 会在 controller 应用配置时补齐默认 PA 系数及其他仿真项。
 
@@ -111,6 +115,6 @@ JSON 拒绝重复 key、NaN/Infinity、未知字段和非法类型。`ClosedLoop
 
 ## 6. 运行记录与结果
 
-配置和 `x` 都可用后，processor 以形成该运行的命令 ID 创建临时 run。替换配置、参考、复位或开始专属自动 run 时，只通过存储 API 终结旧 recorder，不会为了更新 manifest 而停止仍需复用的 controller。命令执行前后以及自动运行状态变化时同步 snapshot；完成、失败或停止后 manifest 成为终态。
+配置和源 `x` 都可用、controller 已形成生效 `x` 后，processor 以形成该运行的命令 ID 创建临时 run。替换配置、参考、复位或开始专属自动 run 时，只通过存储 API 终结旧 recorder，不会为了更新 manifest 而停止仍需复用的 controller。命令执行前后以及自动运行状态变化时同步 snapshot；完成、失败或停止后 manifest 成为终态。
 
 成功的 `run` 自动生成 `result_<run-command-id>.mat`。分步流程在完成后通过 `export` 生成 `result_<export-command-id>.mat`。导出期间使用 run 的 export guard，契约详见 `storage_design.md`。

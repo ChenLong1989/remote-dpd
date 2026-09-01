@@ -26,8 +26,8 @@ from .preprocessing import CaptureBatch
 _DEFAULT_PA_COEFFICIENTS = [
     {"p": 1, "m": 0, "real": 1.0, "imag": 0.0},
     {"p": 1, "m": 1, "real": 0.04, "imag": 0.015},
-    {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
-    {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
+    {"p": 3, "m": 0, "real": -1.44, "imag": 0.3},
+    {"p": 3, "m": 1, "real": -0.24, "imag": 0.12},
 ]
 
 _PA_COEFFICIENT_FIELD = DeviceParameterField(
@@ -67,7 +67,7 @@ _PA_COEFFICIENT_FIELD = DeviceParameterField(
 
 SIMULATED_DEVICE_SCHEMA = DeviceParameterSchema(
     device_type="simulated",
-    schema_version=2,
+    schema_version=3,
     fields=(
         DeviceParameterField(
             name="pa_coefficients",
@@ -104,7 +104,7 @@ SIMULATED_DEVICE_SCHEMA = DeviceParameterSchema(
             value_type=DeviceParameterType.NUMBER,
             minimum=-300.0,
             maximum=0.0,
-            default=-80.0,
+            default=-85.74,
             unit="dBFS",
             description="Complex Gaussian-noise RMS relative to full scale.",
         ),

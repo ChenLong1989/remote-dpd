@@ -256,6 +256,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
                 max_adjustments=max_adjustments,
                 call_timeout_seconds=2.5,
             ),
+            normalize_reference_rms=False,
             runtime_name=runtime_name,
             runtime_config={"mu": 0.5} if runtime_config is None else runtime_config,
             max_iterations=max_iterations,
@@ -298,6 +299,85 @@ class ClosedLoopControllerTests(unittest.TestCase):
             self.make_config(max_iterations=0)
         with self.assertRaises(TypeError):
             ClosedLoopConfig(DeviceConfig(), max_iterations=True)
+        with self.assertRaises(TypeError):
+            ClosedLoopConfig(DeviceConfig(), normalize_reference_rms=1)
+        with self.assertRaises(ValueError):
+            ClosedLoopConfig(DeviceConfig(), reference_target_rms_dbfs=-120.1)
+        with self.assertRaises(ValueError):
+            ClosedLoopConfig(DeviceConfig(), reference_target_rms_dbfs=0.1)
+
+    def test_reference_rms_normalization_defaults_and_reuses_source_on_reconfigure(
+        self,
+    ):
+        source = self.x * 4.0
+        original = source.copy()
+        bench = FakeRFBench(self.x.size * 100)
+        controller = ClosedLoopController(bench)
+        controller.connect()
+
+        loaded = controller.load_reference(source)
+
+        self.assertEqual(loaded.state, ControllerState.IDLE)
+        self.assertAlmostEqual(
+            float(np.sqrt(np.mean(np.abs(loaded.x) ** 2))),
+            10.0 ** (-15.0 / 20.0),
+        )
+        self.assertTrue(loaded.reference_normalization.enabled)
+        self.assertAlmostEqual(
+            loaded.reference_normalization.effective_rms_dbfs,
+            -15.0,
+        )
+        np.testing.assert_array_equal(source, original)
+
+        target_config = ClosedLoopConfig(
+            self.make_config().device_config,
+            reference_target_rms_dbfs=-20.0,
+        )
+        targeted = controller.apply_config(target_config)
+        self.assertAlmostEqual(
+            float(np.sqrt(np.mean(np.abs(targeted.x) ** 2))),
+            0.1,
+        )
+        source_rms = float(np.sqrt(np.mean(np.abs(source) ** 2)))
+        self.assertAlmostEqual(
+            targeted.reference_normalization.scale_db,
+            20.0 * np.log10(0.1 / source_rms),
+        )
+
+        bypassed = controller.apply_config(
+            ClosedLoopConfig(
+                self.make_config().device_config,
+                normalize_reference_rms=False,
+            )
+        )
+        np.testing.assert_array_equal(bypassed.x, source)
+        self.assertFalse(bypassed.reference_normalization.enabled)
+        self.assertEqual(bypassed.reference_normalization.scale, 1.0)
+
+    def test_normalization_checks_effective_peak_and_rejects_zero_rms(self):
+        overrange_source = self.x * 10.0
+        self.assertGreater(float(np.max(np.abs(overrange_source))), 1.0)
+        normalized_controller = ClosedLoopController(FakeRFBench(self.x.size * 100))
+        normalized = normalized_controller.load_reference(overrange_source)
+        self.assertLessEqual(float(np.max(np.abs(normalized.x))), 1.0)
+
+        bench = FakeRFBench(self.x.size * 100)
+        controller = ClosedLoopController(bench)
+        controller.connect()
+        controller.apply_config(
+            ClosedLoopConfig(
+                self.make_config().device_config,
+                reference_target_rms_dbfs=0.0,
+            )
+        )
+        impulsive = np.zeros_like(self.x)
+        impulsive[0] = 10.0
+        with self.assertRaises(DigitalSafetyError):
+            controller.load_reference(impulsive)
+
+        controller = ClosedLoopController(FakeRFBench(self.x.size * 100))
+        with self.assertRaisesRegex(ValueError, "non-zero RMS"):
+            controller.load_reference(np.zeros_like(self.x))
 
     def test_reference_and_configuration_must_fit_operation_budgets(self):
         cases = (

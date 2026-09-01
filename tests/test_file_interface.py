@@ -42,6 +42,8 @@ def _configuration(
 ) -> dict[str, object]:
     return {
         "device_type": "simulated",
+        "normalize_reference_rms": False,
+        "reference_target_rms_dbfs": -15.0,
         "device_config": {
             "center_frequency_hz": 3.5e9,
             "sample_rate_hz": 245.76e6,
@@ -190,7 +192,7 @@ class FileCommandServiceTests(unittest.TestCase):
         result_path = self.service.result_path("run-e2e")
         self.assertTrue(result_path.is_file())
         payload = loadmat(result_path, squeeze_me=True, struct_as_record=False)
-        self.assertEqual(int(payload["schema_version"]), 1)
+        self.assertEqual(int(payload["schema_version"]), 2)
         np.testing.assert_allclose(np.asarray(payload["x"]).reshape(-1), self.x)
         self.assertEqual(np.asarray(payload["y"]).size, self.x.size)
         self.assertEqual(np.asarray(payload["z"]).size, self.x.size)
@@ -224,6 +226,36 @@ class FileCommandServiceTests(unittest.TestCase):
             np.asarray(result["x"]).reshape(-1),
             new_reference,
         )
+
+    def test_run_normalizes_source_before_storage_runtime_and_export(self):
+        source = self.x * 4.0
+        config = _configuration(max_iterations=1)
+        config["normalize_reference_rms"] = True
+        config["reference_target_rms_dbfs"] = -15.0
+
+        status = self.process(
+            "normalized-run",
+            "run",
+            x=source,
+            config=config,
+        )
+        payload = loadmat(
+            self.service.result_path("normalized-run"),
+            squeeze_me=True,
+            struct_as_record=False,
+        )
+        effective = np.asarray(payload["x"]).reshape(-1)
+
+        self.assertEqual(status.state, "completed")
+        self.assertAlmostEqual(
+            float(np.sqrt(np.mean(np.abs(effective) ** 2))),
+            10.0 ** (-15.0 / 20.0),
+        )
+        self.assertLessEqual(float(np.max(np.abs(effective))), 1.0)
+        np.testing.assert_array_equal(source, self.x * 4.0)
+        exported_config = json.loads(str(payload["config"]))
+        self.assertTrue(exported_config["normalize_reference_rms"])
+        self.assertEqual(exported_config["reference_target_rms_dbfs"], -15.0)
 
     def test_all_stepwise_commands_use_the_same_controller(self):
         loaded = self.process("manual-load", "load", x=self.x)
@@ -1745,6 +1777,16 @@ class FileCommandServiceTests(unittest.TestCase):
         np.testing.assert_array_equal(
             parsed.closed_loop.runtime_config["taps"], np.asarray([1.0, 0.5])
         )
+
+    def test_missing_reference_normalization_fields_use_new_defaults(self):
+        config = _configuration()
+        config.pop("normalize_reference_rms")
+        config.pop("reference_target_rms_dbfs")
+
+        parsed = _parse_config_json(json.dumps(config))
+
+        self.assertTrue(parsed.closed_loop.normalize_reference_rms)
+        self.assertEqual(parsed.closed_loop.reference_target_rms_dbfs, -15.0)
 
     def test_strict_scalar_and_action_validation(self):
         version_path = _write_command(

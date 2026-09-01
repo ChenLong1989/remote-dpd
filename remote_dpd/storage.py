@@ -951,6 +951,7 @@ def _snapshot_metadata(snapshot: ControllerSnapshot) -> dict[str, Any]:
             "device_type": snapshot.device_type,
             "completed_at": snapshot.completed_at,
             "reference_safety": snapshot.reference_safety,
+            "reference_normalization": snapshot.reference_normalization,
             "last_error": snapshot.last_error,
         }
     )

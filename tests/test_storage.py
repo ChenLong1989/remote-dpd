@@ -16,6 +16,7 @@ from remote_dpd.controller import (
     ControllerSnapshot,
     ControllerState,
     IterationRecord,
+    ReferenceNormalizationReport,
 )
 from remote_dpd.device import DeviceConfig
 from remote_dpd.power_control import PowerAdjustment
@@ -55,6 +56,7 @@ class RunStorageTests(unittest.TestCase):
                 call_timeout_seconds=1.0,
                 device_options={"random_seed": 7, "labels": ["a", "b"]},
             ),
+            normalize_reference_rms=False,
             runtime_config={"mu": 0.5},
             max_iterations=2,
         )
@@ -436,6 +438,56 @@ class RunStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(RunConflictError, "config conflicts"):
             recorder.mark_terminal(ControllerState.COMPLETED)
 
+    def test_schema_one_precommit_cache_remains_recoverable(self):
+        store = RunStore(self.root)
+        recorder = store.create_run(self.config, self.x, run_id="legacy-cache")
+        snapshot = self._snapshot(ControllerState.COMPLETED)
+        from remote_dpd.result_export import export_final_mat, load_final_payload
+
+        def crash_after_cache(path, current_snapshot):
+            export_final_mat(path, current_snapshot)
+            raise RuntimeError("simulated legacy precommit crash")
+
+        with (
+            patch(
+                "remote_dpd.result_export.export_final_mat",
+                side_effect=crash_after_cache,
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            recorder.record_snapshot(snapshot)
+
+        cache = recorder.final_result_path
+        payload = load_final_payload(cache)
+        config = json.loads(payload["config"])
+        config.pop("normalize_reference_rms")
+        config.pop("reference_target_rms_dbfs")
+        metrics = dict(payload["metrics"])
+        metrics.pop("source_rms_dbfs")
+        metrics.pop("reference_rms_dbfs")
+        metrics.pop("reference_scale_db")
+        legacy_payload = {
+            **payload,
+            "schema_version": 1,
+            "config": json.dumps(config, separators=(",", ":"), sort_keys=True),
+            "metrics": metrics,
+        }
+        from scipy.io import savemat
+
+        savemat(cache, legacy_payload)
+        stored_config = self.config.to_dict()
+        stored_config.pop("normalize_reference_rms")
+        stored_config.pop("reference_target_rms_dbfs")
+        (recorder.path / "config.json").write_text(
+            json.dumps(stored_config, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+
+        recorder.close()
+        recovered = RunStore(self.root).open_run("legacy-cache")
+        self.assertTrue(recovered.mark_terminal(ControllerState.COMPLETED))
+        self.assertEqual(recovered.read_manifest()["status"], "completed")
+
     def _snapshot(
         self,
         state,
@@ -463,6 +515,18 @@ class RunStorageTests(unittest.TestCase):
             x, self.config.device_config.sample_rate_hz
         ).process((batch,))
         safety = validate_reference(x)
+        reference_rms = float(np.sqrt(np.mean(np.abs(x) ** 2)))
+        reference_rms_dbfs = float(20.0 * np.log10(reference_rms))
+        normalization = ReferenceNormalizationReport(
+            enabled=False,
+            source_rms=reference_rms,
+            source_rms_dbfs=reference_rms_dbfs,
+            target_rms_dbfs=-15.0,
+            scale=1.0,
+            scale_db=0.0,
+            effective_rms=reference_rms,
+            effective_rms_dbfs=reference_rms_dbfs,
+        )
         record = IterationRecord(
             iteration=0,
             y=x,
@@ -506,6 +570,7 @@ class RunStorageTests(unittest.TestCase):
             device_type="simulated",
             completed_at="2026-08-28T01:02:03Z" if terminal else None,
             reference_safety=safety,
+            reference_normalization=normalization,
             x=x,
             records=records,
             power_trace=(
