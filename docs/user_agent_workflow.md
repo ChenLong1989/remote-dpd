@@ -121,6 +121,7 @@ PR 合入后，Agent 负责收尾：
 | `docs/preprocessing_design.md` | 反馈批次、时延/相位对齐、相干平均和固定增益校正 | 模块级 |
 | `docs/algorithm_runtime_design.md` | DPD runtime 生命周期、基础 ILC、注册表和数字安全边界 | 模块级 |
 | `docs/simulation_design.md` | 仿真 RF bench、有记忆 PA、反馈抓取和功率测量模型 | 模块级 |
+| `docs/real_bench_design.md` | 真机 RF bench 适配器、N1912A 功率计、44 V 电源守卫与 GaN PA 电源红线 | 模块级 |
 | `docs/controller_design.md` | 初始功率调节、闭环状态机、迭代记录、停止和安全收尾 | 模块级 |
 | `docs/storage_design.md` | 临时运行 artifact、清理保护和最终 MAT 结果契约 | 模块级 |
 | `docs/file_interface_design.md` | inbox/outbox MAT 命令、状态、幂等和并发契约 | 模块级 |

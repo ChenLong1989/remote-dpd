@@ -15,6 +15,17 @@ dependencies = [
     "watchdog>=3.0",
 ]
 
+[project.optional-dependencies]
+# Real-station adapter (remote_dpd.real_bench) driver packages. The NI device
+# drivers themselves (NI-VISA, NI-RFSG, NI-RFSA) are provided by the station
+# software stack and are not installable from PyPI.
+real-hardware = [
+    "PyVISA>=1.15",
+    "nirfsg>=1.2",
+    "nirfsa>=1.0",
+    "nitclk>=1.5",
+]
+
 [project.scripts]
 remote-dpd = "remote_dpd.cli:main"
 

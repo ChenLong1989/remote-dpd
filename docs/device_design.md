@@ -1,6 +1,6 @@
 # 设备能力契约设计
 
-本文描述 `remote_dpd/device.py` 当前已经实现的稳定设备层契约。仓库已经提供实现相同契约的 `SimulatedRFBench`，默认文件命令服务通过设备注册表创建它；真实设备适配器尚未实现。
+本文描述 `remote_dpd/device.py` 当前已经实现的稳定设备层契约。仓库已经提供实现相同契约的 `SimulatedRFBench` 与真机 `Vst5842RFBench`（`vst5842`），默认文件命令服务通过设备注册表创建。
 
 ## 1. 设计目标
 
@@ -90,9 +90,9 @@ classDiagram
 
 ## 5. 当前边界
 
-设备注册表通过 `register_rf_bench()`、`create_rf_bench()` 和 `list_rf_benches()` 按规范化名称管理无参数 factory。每次创建返回独立 `RFBench`；factory 返回错误类型时立即拒绝。内置注册名当前只有 `simulated`，使用延迟导入避免设备抽象反向依赖具体仿真实现。后续真实设备适配器沿用同一注册入口。
+设备注册表通过 `register_rf_bench()`、`create_rf_bench()` 和 `list_rf_benches()` 按规范化名称管理无参数 factory。每次创建返回独立 `RFBench`；factory 返回错误类型时立即拒绝。内置注册名为 `simulated`（延迟导入避免设备抽象反向依赖具体仿真实现）和 `vst5842`（`remote_dpd/real_bench.py`，本机真机适配器，同样延迟导入驱动包，详见 `docs/real_bench_design.md`）。
 
 - 接口是同步的；调用超时由适配器和后续控制层共同落实。
 - 契约不提供真实硬件线程安全或事务保证；系统按单任务串行调用。
 - `upload_waveform()` 不允许隐式缩放、AGC 或削峰，数字安全由调用前的独立安全模块保证。
-- 当前首个具体实现是阶段 2 的 `SimulatedRFBench`，同时实现三个能力并由控制器完成契约测试；真实设备适配器仍不在当前范围。
+- 首个具体实现是阶段 2 的 `SimulatedRFBench`，同时实现三个能力并由控制器完成契约测试；真机适配器 `Vst5842RFBench` 以组合方式实现（同一 VST 对象兼任发射与接收），设计见 `docs/real_bench_design.md`。
