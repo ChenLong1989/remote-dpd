@@ -5,7 +5,7 @@
 - 可扩展的发射、接收、功率测量和组合式 `RFBench` 契约；
 - 带有记忆多项式 PA、TX 衰减、反馈扰动和功率测量的确定性仿真设备；v3 默认 PA 在当前 10×20 MHz waveform 上产生约 `-28/-29 dBc` 初始外邻道失真；
 - 默认开启的 source reference RMS conditioning，目标 `-15 dBFS`；公共默认物理目标功率为 `-15 dBm`；
-- 独立反馈预处理、基础 ILC runtime、数字波形安全和物理功率安全；
+- 独立反馈预处理、基础 ILC 与前向模型梯度 ILC 两种 runtime、数字波形安全和物理功率安全；
 - 分步或自动的单任务闭环控制器；
 - 自动清理的完整临时运行记录和最终 MAT 正式结果；
 - 版本化 inbox/outbox MAT 文件命令入口；
@@ -57,7 +57,7 @@ remote-dpd \
 - 弹窗式公共设备配置、动态专属 schema、仿真 PA 系数和 measurement-band 编辑；
 - connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 分步操作和一键自动闭环；
 - 默认 simulated bench 与首个 waveform 的一键完整闭环、固定 RF abort、controller/channel 状态、功率调节和对齐诊断；
-- 全新页面从服务端获得确定的 Web quick-start profile，不读取浏览器存储或历史 run；当前 profile 使用 `491.52 MS/s`、reference RMS `-15 dBFS`、Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC；
+- 全新页面从服务端获得确定的 Web quick-start profile，不读取浏览器存储或历史 run；当前 profile 使用 `491.52 MS/s`、reference RMS `-15 dBFS`、Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`forward_model_ilc` runtime、`mu=1.0` 和 15 次 ILC；默认 PA 下 NMSE 单调改善约 `13.2 dB`，且不会像基础 ILC 在深度压缩下末段发散；
 - 完整周期 `Z₀/Zₙ/Eₙ` 频谱、Trace/Marker、默认 10TX+2 adjacent ACLR 模板、分 reference 的 dBc/channel-power bar、PAPR、AM/AM、AM/PM 和 NMSE 改善；
 - 临时 run、任意历史轮次重新分析、结构化事件和最终 MAT 下载。
 
@@ -123,7 +123,7 @@ Web 与外部 MAT 命令共用同一个普通命令 worker 和 stop latch，任�
 - `device.py`：设备能力、公共配置、动态 schema 和设备注册表。
 - `simulation.py`：仿真 RF bench 和周期有记忆 PA。
 - `preprocessing.py`：时延/相位对齐、相干平均和首轮固定幅度增益。
-- `runtime.py`：版本化 DPD runtime 和基础 ILC。
+- `runtime.py`：版本化 DPD runtime、基础 ILC 和前向模型梯度 ILC。
 - `safety.py` / `power_control.py`：数字与物理功率安全。
 - `controller.py`：分步/自动闭环、状态机、停止和安全收尾。
 - `storage.py` / `result_export.py`：临时记录、清理和最终 MAT。

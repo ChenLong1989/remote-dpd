@@ -189,8 +189,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-5")
-        script = self.client.get("/static/app.js?v=single-screen-5")
+        styles = self.client.get("/static/styles.css?v=forward-model-1")
+        script = self.client.get("/static/app.js?v=forward-model-1")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -205,11 +205,14 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-5", page.text)
+        self.assertIn("forward-model-1", page.text)
         self.assertIn('value="target_error" checked', page.text)
         self.assertIn('data-aux-view="aclr"', page.text)
         self.assertIn('id="normalize-reference-rms"', page.text)
         self.assertIn('id="reference-target-rms"', page.text)
+        self.assertIn('id="runtime-name"', page.text)
+        self.assertIn('value="forward_model_ilc"', page.text)
+        self.assertIn('byId("runtime-name").value', script.text)
         self.assertEqual(health.json()["status"], "ok")
         simulated = devices.json()["devices"][0]
         self.assertEqual(simulated["device_type"], "simulated")
@@ -247,7 +250,8 @@ class WebAPITests(unittest.TestCase):
         )
         self.assertEqual(noise_field["default"], -85.74)
         self.assertEqual(default_configuration["max_iterations"], 15)
-        self.assertEqual(default_configuration["runtime_config"]["mu"], 0.35)
+        self.assertEqual(default_configuration["runtime_name"], "forward_model_ilc")
+        self.assertEqual(default_configuration["runtime_config"]["mu"], 1.0)
         schema_capture = next(
             field
             for field in simulated["schema"]["fields"]

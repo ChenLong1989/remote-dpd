@@ -8,7 +8,7 @@
       content="Single-screen RF workbench for iterative digital predistortion control and analysis."
     />
     <title>Remote DPD RF Workbench</title>
-    <link rel="stylesheet" href="/static/styles.css?v=single-screen-5" />
+    <link rel="stylesheet" href="/static/styles.css?v=forward-model-1" />
   </head>
   <body>
     <header class="instrument-header">
@@ -144,7 +144,8 @@
             <label><span>RX channel</span><input id="rx-channel" value="0" /></label>
             <label><span>Trigger</span><input id="trigger-source" value="immediate" /></label>
             <label><span>Average segments</span><input id="average-segments" value="10" /></label>
-            <label><span>ILC μ</span><input id="ilc-mu" value="0.5" /></label>
+            <label><span>DPD runtime</span><select id="runtime-name"><option value="forward_model_ilc">Forward-Model ILC</option><option value="basic_ilc">Basic ILC</option></select></label>
+            <label><span>ILC μ</span><input id="ilc-mu" value="1.0" /></label>
             <label><span>Iterations</span><input id="max-iterations" value="10" /></label>
           </div>
         </section>
@@ -240,6 +241,6 @@
       <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
     </dialog>
 
-    <script src="/static/app.js?v=single-screen-5" defer></script>
+    <script src="/static/app.js?v=forward-model-1" defer></script>
   </body>
 </html>
