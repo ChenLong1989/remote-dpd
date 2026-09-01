@@ -12,6 +12,8 @@
 - `normalize_reference_rms` 开关，默认 `true`；
 - `reference_target_rms_dbfs`，默认 `-15.0`，允许有限 `[-120, 0] dBFS`。
 
+Controller 保存的生效配置始终描述实际执行的参数：`apply_config` 用 runtime 的归一化结果（默认值补齐，例如 `forward_model_ilc` 的 `orders/memory_depths/ridge` 和 `basic_ilc` 的 `mu`）替换调用方原始 `runtime_config`，与设备 schema 归一化后的 `device_options` 同等对待。snapshot、run 记录和正式结果 MAT 因此总是记录完整生效配置，调用方省略的字段不会在结果中缺失。
+
 Controller 保留只读源波形，并从源波形一次性生成生效 `x`：
 
 ```text

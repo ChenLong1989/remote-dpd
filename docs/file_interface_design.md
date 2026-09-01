@@ -66,7 +66,7 @@
 }
 ```
 
-两项 reference normalization 字段是 schema 1 `config_json` 的可选扩展；缺省按 `true/-15.0 dBFS`。Processor 保留源波形以支持先 load 后 configure 和后续重配，但 controller 统一形成生效 `x`，run recorder 只保存 controller snapshot 的生效 `x`。归一化关闭或结果峰值超限时继续 fail closed，文件入口不缩放或削峰。需要复现升级前输入幅度的生产者应显式传 `normalize_reference_rms=false`。
+`runtime_name` 接受注册表中的任意 runtime（`basic_ilc`、`forward_model_ilc`），`runtime_config` 按所选 runtime 严格校验。两项 reference normalization 字段是 schema 1 `config_json` 的可选扩展；缺省按 `true/-15.0 dBFS`。Processor 保留源波形以支持先 load 后 configure 和后续重配，但 controller 统一形成生效 `x`，run recorder 只保存 controller snapshot 的生效 `x`。归一化关闭或结果峰值超限时继续 fail closed，文件入口不缩放或削峰。需要复现升级前输入幅度的生产者应显式传 `normalize_reference_rms=false`。
 
 `device_config` 字段名必须属于 `DeviceConfig`，设备专属值位于其中的 `device_options`。设备 schema 会在 controller 应用配置时补齐默认 PA 系数及其他仿真项。
 

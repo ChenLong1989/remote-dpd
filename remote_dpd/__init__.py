@@ -46,6 +46,7 @@ from .result_export import (
 from .runtime import (
     BasicILCRuntime,
     DPDRuntime,
+    ForwardModelILCRuntime,
     RuntimeStepInput,
     RuntimeStepResult,
     create_runtime,
@@ -87,6 +88,7 @@ __all__ = [
     "FileCommandError",
     "FileCommandProcessor",
     "FileCommandService",
+    "ForwardModelILCRuntime",
     "IterationRecord",
     "PowerAdjustment",
     "PowerControlCancelled",

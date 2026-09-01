@@ -74,7 +74,8 @@ _RUN_DETAIL_EVENTS_MAX_NODES = 10_000
 _SIMULATED_WEB_SAMPLE_RATE_HZ = 491.52e6
 _SIMULATED_WEB_MAX_CAPTURE_SAMPLES = 10_000_000
 _SIMULATED_WEB_MAX_ITERATIONS = 15
-_SIMULATED_WEB_ILC_MU = 0.35
+_SIMULATED_WEB_RUNTIME_NAME = "forward_model_ilc"
+_SIMULATED_WEB_ILC_MU = 1.0
 
 
 class WebBridgeError(ValueError):
@@ -580,6 +581,7 @@ def _web_default_configuration(
     schema: DeviceParameterSchema,
 ) -> dict[str, Any]:
     common = DeviceConfig().to_dict()
+    runtime_name = "basic_ilc"
     max_iterations = 10
     ilc_mu = 0.5
     if device_type == "simulated":
@@ -587,6 +589,7 @@ def _web_default_configuration(
         common["device_options"] = schema.validate_options(
             {"max_capture_samples": _SIMULATED_WEB_MAX_CAPTURE_SAMPLES}
         )
+        runtime_name = _SIMULATED_WEB_RUNTIME_NAME
         max_iterations = _SIMULATED_WEB_MAX_ITERATIONS
         ilc_mu = _SIMULATED_WEB_ILC_MU
     return {
@@ -594,7 +597,7 @@ def _web_default_configuration(
         "device_config": common,
         "normalize_reference_rms": DEFAULT_NORMALIZE_REFERENCE_RMS,
         "reference_target_rms_dbfs": DEFAULT_REFERENCE_TARGET_RMS_DBFS,
-        "runtime_name": "basic_ilc",
+        "runtime_name": runtime_name,
         "runtime_config": {"mu": ilc_mu},
         "max_iterations": max_iterations,
     }
