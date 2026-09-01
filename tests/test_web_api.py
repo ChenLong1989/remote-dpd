@@ -39,6 +39,8 @@ def _reference(sample_count=64):
 def _configuration(sample_count=64, max_iterations=2):
     return {
         "device_type": "simulated",
+        "normalize_reference_rms": False,
+        "reference_target_rms_dbfs": -15.0,
         "device_config": {
             "center_frequency_hz": 3.5e9,
             "sample_rate_hz": 245.76e6,
@@ -187,8 +189,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-4")
-        script = self.client.get("/static/app.js?v=single-screen-4")
+        styles = self.client.get("/static/styles.css?v=single-screen-5")
+        script = self.client.get("/static/app.js?v=single-screen-5")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -203,15 +205,20 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-4", page.text)
+        self.assertIn("single-screen-5", page.text)
         self.assertIn('value="target_error" checked', page.text)
         self.assertIn('data-aux-view="aclr"', page.text)
+        self.assertIn('id="normalize-reference-rms"', page.text)
+        self.assertIn('id="reference-target-rms"', page.text)
         self.assertEqual(health.json()["status"], "ok")
         simulated = devices.json()["devices"][0]
         self.assertEqual(simulated["device_type"], "simulated")
-        self.assertEqual(simulated["schema"]["schema_version"], 2)
+        self.assertEqual(simulated["schema"]["schema_version"], 3)
         default_configuration = simulated["default_configuration"]
         default_common = default_configuration["device_config"]
+        self.assertTrue(default_configuration["normalize_reference_rms"])
+        self.assertEqual(default_configuration["reference_target_rms_dbfs"], -15.0)
+        self.assertEqual(default_common["target_power_dbm"], -15.0)
         self.assertEqual(default_common["sample_rate_hz"], 491.52e6)
         self.assertEqual(default_common["average_segment_count"], 10)
         self.assertEqual(
@@ -229,10 +236,16 @@ class WebAPITests(unittest.TestCase):
                 if row["p"] == 3
             ],
             [
-                {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
-                {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
+                {"p": 3, "m": 0, "real": -1.44, "imag": 0.3},
+                {"p": 3, "m": 1, "real": -0.24, "imag": 0.12},
             ],
         )
+        noise_field = next(
+            field
+            for field in simulated["schema"]["fields"]
+            if field["name"] == "noise_dbfs"
+        )
+        self.assertEqual(noise_field["default"], -85.74)
         self.assertEqual(default_configuration["max_iterations"], 15)
         self.assertEqual(default_configuration["runtime_config"]["mu"], 0.35)
         schema_capture = next(
@@ -525,6 +538,11 @@ class WebAPITests(unittest.TestCase):
 
         self.assertEqual(session["controller"]["state"], "completed")
         self.assertEqual(len(session["controller"]["records"]), 3)
+        self.assertFalse(session["controller"]["reference_normalization"]["enabled"])
+        self.assertEqual(
+            session["controller"]["reference_normalization"]["scale_db"],
+            0.0,
+        )
         self.assertEqual(current_preview["preview_count"], 32)
         self.assertEqual(runs["runs"][0]["run_id"], command_id)
         self.assertEqual(detail["run"]["status"], "completed")
@@ -597,7 +615,7 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(power_status["controller_state"], "power_ready")
 
     def test_invalid_waveform_does_not_change_session(self):
-        savemat(self.waveform_root / "unsafe.mat", {"x": np.asarray([1.1, 0.0])})
+        savemat(self.waveform_root / "unsafe.mat", {"x": np.zeros(16)})
         before = self.client.get("/api/v1/session").json()
 
         rejected = self.client.post(

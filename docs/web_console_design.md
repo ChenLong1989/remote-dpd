@@ -58,11 +58,11 @@ External MAT producer ─────────────┘                
 - 每一级父目录和最终文件都不跟随符号链接；root 路径启动后被替换也不会切换到新目录；
 - 列表只返回真实目录和普通 `.mat` 文件，忽略隐藏项、FIFO、socket、device 和其他扩展名；
 - 默认文件上限 256 MiB，`x` 上限 1000 万样点，preview 上限 4096 点；
-- MAT 先用目录元数据检查 `x` 的 shape/样点上限，再只解压变量 `x`；拒绝 scalar、矩阵、logical、cell、struct、object、sparse、空数组、NaN/Inf、零 RMS 和超过 `0 dBFS` 的参考；
+- MAT 先用目录元数据检查 `x` 的 shape/样点上限，再只解压变量 `x`；拒绝 scalar、矩阵、logical、cell、struct、object、sparse、空数组、NaN/Inf 和零 RMS；source 峰值可超过 `0 dBFS`，但生效参考仍必须通过 controller 安全检查；
 - 可选 MAT v7.3/HDF5 路径只接受内部 hard link 指向的普通 dataset，拒绝 external/virtual storage、可扩展 shape、扩展宽度 dtype 和大于逻辑数据集的 chunk；
 - `preview` 和 `load` 都重新从已锚定文件描述符读取并完整校验，不把之前 preview 当作信任依据。
 
-成功的 `x` 转换为独立、不可写的一维 `complex128`，随后文件命令 parser 和 controller 数字安全边界仍会再次校验。
+成功的 source `x` 转换为独立、不可写的一维 `complex128`，随后文件命令 parser 和 controller 数字安全边界仍会再次校验。preview 返回 source 安全统计；页面结合当前 draft 显示预计 scale、effective RMS/peak。controller 在归一化开启时校验缩放后的 `x`，关闭时校验 source，任何实际生效峰值超限仍 fail closed。
 
 ## 4. REST 和 SSE
 
@@ -114,7 +114,9 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Simulation DUT 页签分组。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect。
 
-新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC。设备 schema、文件入口和非 Web 消费者仍保留各自原默认值。PA v2 在 15 次、`mu=0.5` 时会于第 13 个候选触发数字峰值安全失败；`mu=0.35` 的完整实测可完成第 15 轮，最终峰值 `0.98509`。数字安全上限和 runtime 通用默认保持不变。
+新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用 reference RMS normalization `true/-15 dBFS`、物理 Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC。simulated schema v3 默认 PA 的完整实测可完成第 15 轮，最终峰值约 `0.710`。数字安全上限和 runtime 通用默认保持不变。
+
+Signal 配置页显示 normalization 开关和 target RMS；关闭时禁用 target 输入。waveform preview 显示 source RMS/peak 以及按当前 draft 预计的 scale、effective RMS/peak，预计峰值超过 0 dBFS 时使用告警色。浏览器只预估和展示，不修改 IQ；最终缩放与峰值安全由 controller 完成。公共物理 Target power 仍在 Power & Safety 页编辑。
 
 页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set 和相对/绝对频率，不引入 Node 构建链或外部 CDN。
 

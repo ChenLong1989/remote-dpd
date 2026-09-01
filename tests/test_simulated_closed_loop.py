@@ -26,7 +26,7 @@ class SimulatedClosedLoopTests(unittest.TestCase):
             device_config=DeviceConfig(
                 sample_rate_hz=245.76e6,
                 average_segment_count=5,
-                target_power_dbm=-10.0,
+                target_power_dbm=-15.0,
                 safety_power_limit_dbm=0.0,
                 initial_attenuation_db=30.0,
                 min_attenuation_db=0.0,
@@ -40,7 +40,7 @@ class SimulatedClosedLoopTests(unittest.TestCase):
                     "random_seed": 7,
                 },
             ),
-            runtime_config={"mu": 0.5},
+            runtime_config={"mu": 0.35},
             max_iterations=5,
         )
         bench = create_rf_bench("simulated")

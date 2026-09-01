@@ -33,6 +33,10 @@ from .safety import (
 
 MAX_CAPTURE_WORKING_SAMPLES = 10_000_000
 MAX_RETAINED_ROUND_SAMPLES = 20_000_000
+DEFAULT_NORMALIZE_REFERENCE_RMS = True
+DEFAULT_REFERENCE_TARGET_RMS_DBFS = -15.0
+MIN_REFERENCE_TARGET_RMS_DBFS = -120.0
+MAX_REFERENCE_TARGET_RMS_DBFS = 0.0
 
 
 class ControllerState(str, Enum):
@@ -75,6 +79,8 @@ class ClosedLoopConfig:
     runtime_name: str = "basic_ilc"
     runtime_config: Mapping[str, Any] = field(default_factory=lambda: {"mu": 0.5})
     max_iterations: int = 10
+    normalize_reference_rms: bool = DEFAULT_NORMALIZE_REFERENCE_RMS
+    reference_target_rms_dbfs: float = DEFAULT_REFERENCE_TARGET_RMS_DBFS
 
     def __post_init__(self) -> None:
         if not isinstance(self.device_config, DeviceConfig):
@@ -84,6 +90,23 @@ class ClosedLoopConfig:
         runtime_name = self.runtime_name.strip().lower()
         if not runtime_name:
             raise ValueError("runtime_name must not be empty")
+        if not isinstance(self.normalize_reference_rms, (bool, np.bool_)):
+            raise TypeError("normalize_reference_rms must be a boolean")
+        normalize_reference_rms = bool(self.normalize_reference_rms)
+        reference_target_rms_dbfs = _finite_real(
+            self.reference_target_rms_dbfs,
+            "reference_target_rms_dbfs",
+        )
+        if not (
+            MIN_REFERENCE_TARGET_RMS_DBFS
+            <= reference_target_rms_dbfs
+            <= MAX_REFERENCE_TARGET_RMS_DBFS
+        ):
+            raise ValueError(
+                "reference_target_rms_dbfs must be between "
+                f"{MIN_REFERENCE_TARGET_RMS_DBFS:g} and "
+                f"{MAX_REFERENCE_TARGET_RMS_DBFS:g}"
+            )
         if isinstance(self.max_iterations, (bool, np.bool_)) or not isinstance(
             self.max_iterations, numbers.Integral
         ):
@@ -94,6 +117,12 @@ class ClosedLoopConfig:
         runtime_config = _freeze_mapping(self.runtime_config, "runtime_config")
 
         object.__setattr__(self, "runtime_name", runtime_name)
+        object.__setattr__(self, "normalize_reference_rms", normalize_reference_rms)
+        object.__setattr__(
+            self,
+            "reference_target_rms_dbfs",
+            reference_target_rms_dbfs,
+        )
         object.__setattr__(self, "runtime_config", runtime_config)
         object.__setattr__(self, "max_iterations", max_iterations)
 
@@ -101,9 +130,38 @@ class ClosedLoopConfig:
         """Return a detached JSON-compatible representation."""
         return {
             "device_config": self.device_config.to_dict(),
+            "normalize_reference_rms": self.normalize_reference_rms,
+            "reference_target_rms_dbfs": self.reference_target_rms_dbfs,
             "runtime_name": self.runtime_name,
             "runtime_config": _json_config_value(self.runtime_config),
             "max_iterations": self.max_iterations,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceNormalizationReport:
+    """Immutable provenance for one source-to-reference RMS adjustment."""
+
+    enabled: bool
+    source_rms: float
+    source_rms_dbfs: float
+    target_rms_dbfs: float
+    scale: float
+    scale_db: float
+    effective_rms: float
+    effective_rms_dbfs: float
+
+    def to_dict(self) -> dict[str, bool | float]:
+        """Return a detached JSON-compatible representation."""
+        return {
+            "enabled": self.enabled,
+            "source_rms": self.source_rms,
+            "source_rms_dbfs": self.source_rms_dbfs,
+            "target_rms_dbfs": self.target_rms_dbfs,
+            "scale": self.scale,
+            "scale_db": self.scale_db,
+            "effective_rms": self.effective_rms,
+            "effective_rms_dbfs": self.effective_rms_dbfs,
         }
 
 
@@ -186,6 +244,7 @@ class ControllerSnapshot:
     device_type: str
     completed_at: str | None
     reference_safety: DigitalSafetyReport | None = None
+    reference_normalization: ReferenceNormalizationReport | None = None
     x: np.ndarray | None = field(default=None, repr=False)
     records: tuple[IterationRecord, ...] = ()
     power_trace: tuple[PowerAdjustment, ...] = ()
@@ -255,8 +314,10 @@ class ClosedLoopController:
         self._transmitting = False
         self._active_operation: str | None = None
         self._config: ClosedLoopConfig | None = None
+        self._source_x: np.ndarray | None = None
         self._x: np.ndarray | None = None
         self._reference_safety: DigitalSafetyReport | None = None
+        self._reference_normalization: ReferenceNormalizationReport | None = None
         self._runtime: DPDRuntime | None = None
         self._preprocessor: FeedbackPreprocessor | None = None
         self._power_result: PowerControlResult | None = None
@@ -343,13 +404,24 @@ class ClosedLoopController:
                     timeout_seconds=timeout,
                 )
                 self._check_stop()
-                self._validate_capture_capacity_for(effective_config, self._x)
+                x = None
+                safety_report = None
+                normalization_report = None
+                if self._source_x is not None:
+                    x, safety_report, normalization_report = _condition_reference(
+                        self._source_x,
+                        effective_config,
+                    )
+                self._validate_capture_capacity_for(effective_config, x)
 
                 self._close_runtime_or_raise()
                 self._runtime = candidate_runtime
                 candidate_runtime = None
                 self._config = effective_config
                 self._configured = True
+                self._x = x
+                self._reference_safety = safety_report
+                self._reference_normalization = normalization_report
                 self._clear_run_state()
                 self._stop_event.clear()
                 self._last_error = None
@@ -367,21 +439,26 @@ class ClosedLoopController:
         return self.snapshot()
 
     def load_reference(self, reference: np.ndarray) -> ControllerSnapshot:
-        """Validate and defensively store the unmodified periodic reference."""
+        """Condition and defensively store one periodic source reference."""
         with self._exclusive("load_reference"):
             self._require_modifiable("load_reference")
             try:
-                safety_report = validate_reference(reference)
-                x = _readonly_signal(reference, "reference")
+                source = _readonly_signal(reference, "reference")
+                x, safety_report, normalization_report = _condition_reference(
+                    source,
+                    self._config,
+                )
                 timeout = self._current_timeout()
                 self._stop_tx_if_needed(timeout)
                 self._check_stop()
                 self._validate_capture_capacity_for(self._config, x)
                 self._reinitialize_runtime_or_raise()
 
+                self._source_x = source
                 self._x = x
                 self._clear_run_state()
                 self._reference_safety = safety_report
+                self._reference_normalization = normalization_report
                 self._stop_event.clear()
                 self._last_error = None
                 self._refresh_idle_or_ready()
@@ -537,8 +614,10 @@ class ClosedLoopController:
                 self._close_runtime_or_raise()
                 self._config = None
                 self._configured = False
+                self._source_x = None
                 self._x = None
                 self._reference_safety = None
+                self._reference_normalization = None
                 self._clear_run_state()
                 self._stop_event.clear()
                 self._last_error = None
@@ -576,6 +655,7 @@ class ClosedLoopController:
                 device_type=self._bench.parameter_schema.device_type,
                 completed_at=self._completed_at,
                 reference_safety=self._reference_safety,
+                reference_normalization=self._reference_normalization,
                 x=self._x,
                 records=tuple(self._records),
                 power_trace=power_trace,
@@ -1012,6 +1092,8 @@ class ClosedLoopController:
         device_values["device_options"] = options
         return ClosedLoopConfig(
             device_config=DeviceConfig(**device_values),
+            normalize_reference_rms=config.normalize_reference_rms,
+            reference_target_rms_dbfs=config.reference_target_rms_dbfs,
             runtime_name=config.runtime_name,
             runtime_config=config.runtime_config,
             max_iterations=config.max_iterations,
@@ -1061,6 +1143,59 @@ def _readonly_signal(value: object, name: str) -> np.ndarray:
     if not np.all(np.isfinite(copied)):
         raise ValueError(f"{name} must contain only finite samples")
     return np.frombuffer(copied.tobytes(), dtype=np.complex128)
+
+
+def _condition_reference(
+    source: np.ndarray,
+    config: ClosedLoopConfig | None,
+) -> tuple[np.ndarray, DigitalSafetyReport, ReferenceNormalizationReport]:
+    source_rms = _stable_rms(source, "reference source")
+    enabled = (
+        DEFAULT_NORMALIZE_REFERENCE_RMS
+        if config is None
+        else config.normalize_reference_rms
+    )
+    target_rms_dbfs = (
+        DEFAULT_REFERENCE_TARGET_RMS_DBFS
+        if config is None
+        else config.reference_target_rms_dbfs
+    )
+    target_rms = 10.0 ** (target_rms_dbfs / 20.0)
+    scale = target_rms / source_rms if enabled else 1.0
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError(
+            "reference RMS normalization scale must be positive and finite"
+        )
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        effective = _readonly_signal(source * scale, "reference")
+    effective_rms = _stable_rms(effective, "effective reference")
+    safety_report = validate_reference(effective)
+    report = ReferenceNormalizationReport(
+        enabled=enabled,
+        source_rms=source_rms,
+        source_rms_dbfs=20.0 * math.log10(source_rms),
+        target_rms_dbfs=target_rms_dbfs,
+        scale=scale,
+        scale_db=20.0 * math.log10(scale),
+        effective_rms=effective_rms,
+        effective_rms_dbfs=20.0 * math.log10(effective_rms),
+    )
+    return effective, safety_report, report
+
+
+def _stable_rms(signal: np.ndarray, name: str) -> float:
+    with np.errstate(over="ignore", invalid="ignore"):
+        magnitude = np.abs(signal)
+    peak = float(np.max(magnitude))
+    if not math.isfinite(peak):
+        raise ValueError(f"{name} magnitude must be finite")
+    if peak <= 0.0:
+        raise ValueError(f"{name} must have non-zero RMS")
+    scaled = magnitude / peak
+    result = peak * math.sqrt(float(np.mean(scaled * scaled)))
+    if not math.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{name} RMS must be positive and finite")
+    return result
 
 
 def _finite_real(value: object, name: str) -> float:

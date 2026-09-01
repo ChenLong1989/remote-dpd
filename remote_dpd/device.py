@@ -129,7 +129,7 @@ class DeviceConfig:
     rx_channel: str = "0"
     trigger: str = "immediate"
     average_segment_count: int = 10
-    target_power_dbm: float = -10.0
+    target_power_dbm: float = -15.0
     safety_power_limit_dbm: float = 0.0
     initial_attenuation_db: float = 30.0
     min_attenuation_db: float = 0.0

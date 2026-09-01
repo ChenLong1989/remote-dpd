@@ -18,6 +18,7 @@ const state = {
   device: null,
   waveforms: [],
   selectedWaveform: "",
+  waveformPreview: null,
   session: null,
   runs: [],
   runDetails: new Map(),
@@ -954,6 +955,8 @@ function selectDevice(deviceType) {
   byId("center-frequency").value = common.center_frequency_hz / 1e6;
   byId("sample-rate").value = common.sample_rate_hz / 1e6;
   byId("target-power").value = common.target_power_dbm;
+  byId("normalize-reference-rms").checked = configuration.normalize_reference_rms;
+  byId("reference-target-rms").value = configuration.reference_target_rms_dbfs;
   byId("average-segments").value = common.average_segment_count;
   byId("safety-power").value = common.safety_power_limit_dbm;
   byId("initial-attenuation").value = common.initial_attenuation_db;
@@ -970,6 +973,7 @@ function selectDevice(deviceType) {
   byId("device-schema-label").textContent =
     `${deviceType.toUpperCase()} · V${state.device.schema.schema_version}`;
   renderDeviceOptions(state.device.schema.fields, common.device_options || {});
+  syncReferenceNormalizationControls();
   updateButtons();
 }
 
@@ -1108,6 +1112,7 @@ async function loadWaveforms() {
 async function previewSelectedWaveform() {
   state.selectedWaveform = byId("waveform-select").value;
   if (!state.selectedWaveform) {
+    state.waveformPreview = null;
     byId("waveform-meta").textContent = "Periodic MAT vector · variable x";
     return;
   }
@@ -1115,11 +1120,46 @@ async function previewSelectedWaveform() {
     const payload = await api(
       `/api/v1/waveforms/preview?path=${encodeURIComponent(state.selectedWaveform)}&points=256`,
     );
-    byId("waveform-meta").textContent =
-      `${payload.sample_count.toLocaleString()} samples · peak ${formatNumber(payload.safety.reference_peak, 3)} · RMS ${formatNumber(payload.safety.reference_rms, 3)}`;
+    state.waveformPreview = payload;
+    renderWaveformNormalizationPreview();
   } catch (error) {
+    state.waveformPreview = null;
     setMessage(error.message, "error");
   }
+}
+
+function syncReferenceNormalizationControls() {
+  const enabled = byId("normalize-reference-rms").checked;
+  byId("reference-target-rms").disabled = !enabled;
+  const status = byId("normalize-reference-rms").nextElementSibling;
+  if (status) status.textContent = enabled ? "ENABLED" : "BYPASSED";
+  renderWaveformNormalizationPreview();
+}
+
+function renderWaveformNormalizationPreview() {
+  const payload = state.waveformPreview;
+  if (!payload) return;
+  const sourceRms = payload.safety?.reference_rms;
+  const sourcePeak = payload.safety?.reference_peak;
+  const enabled = byId("normalize-reference-rms").checked;
+  const targetDbfs = Number(byId("reference-target-rms").value);
+  if (!Number.isFinite(sourceRms) || sourceRms <= 0 || !Number.isFinite(sourcePeak)) {
+    byId("waveform-meta").textContent = `${payload.sample_count.toLocaleString()} samples · source statistics unavailable`;
+    return;
+  }
+  const sourceDbfs = 20 * Math.log10(sourceRms);
+  const meta = byId("waveform-meta");
+  if (enabled && (!Number.isFinite(targetDbfs) || targetDbfs < -120 || targetDbfs > 0)) {
+    meta.textContent = `${payload.sample_count.toLocaleString()} samples · source ${formatNumber(sourceDbfs, 2)} dBFS / peak ${formatNumber(sourcePeak, 3)} · target RMS must be between -120 and 0 dBFS`;
+    meta.classList.add("warning");
+    return;
+  }
+  const scale = enabled ? (10 ** (targetDbfs / 20)) / sourceRms : 1;
+  const effectiveRms = sourceRms * scale;
+  const effectivePeak = sourcePeak * scale;
+  const scaleDb = 20 * Math.log10(scale);
+  meta.textContent = `${payload.sample_count.toLocaleString()} samples · source ${formatNumber(sourceDbfs, 2)} dBFS / peak ${formatNumber(sourcePeak, 3)} → effective ${formatNumber(20 * Math.log10(effectiveRms), 2)} dBFS / peak ${formatNumber(effectivePeak, 3)} · scale ${formatSigned(scaleDb, 2, "dB")}`;
+  meta.classList.toggle("warning", effectivePeak > 1);
 }
 
 function collectConfiguration() {
@@ -1148,6 +1188,11 @@ function collectConfiguration() {
   }
   return {
     device_type: state.device.device_type,
+    normalize_reference_rms: byId("normalize-reference-rms").checked,
+    reference_target_rms_dbfs: finiteValue(
+      "reference-target-rms",
+      "Reference target RMS",
+    ),
     device_config: {
       center_frequency_hz: finiteValue("center-frequency", "Center frequency") * 1e6,
       sample_rate_hz: finiteValue("sample-rate", "Sample rate") * 1e6,
@@ -1752,6 +1797,14 @@ function bindControls() {
   });
   byId("device-select").addEventListener("change", (event) => selectDevice(event.target.value));
   byId("waveform-select").addEventListener("change", previewSelectedWaveform);
+  byId("normalize-reference-rms").addEventListener(
+    "change",
+    syncReferenceNormalizationControls,
+  );
+  byId("reference-target-rms").addEventListener(
+    "input",
+    renderWaveformNormalizationPreview,
+  );
   byId("refresh-waveforms").addEventListener("click", loadWaveforms);
   byId("refresh-runs").addEventListener("click", refreshRuns);
   byId("add-coefficient").addEventListener("click", () => addCoefficientRow());

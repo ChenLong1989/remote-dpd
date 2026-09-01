@@ -28,6 +28,8 @@
 | `call_timeout_seconds` | 设备调用的正有限超时 |
 | `device_options` | 适配器专属、JSON 兼容且递归不可变的配置 mapping |
 
+公共 `target_power_dbm` 默认值为 `-15.0`，与默认 `-15 dBFS` reference RMS 工作点配套；`safety_power_limit_dbm` 默认仍为 `0.0`。Web quick-start 继承公共默认，文件/Python 调用省略该字段时同样采用 `-15 dBm`；显式配置不受默认值影响。
+
 NumPy 数值标量在构造时转换为内建 `int`/`float`，mapping 和 array 递归复制并冻结；NaN、Inf 和非 JSON 值被拒绝。`to_dict()` 返回完全分离、可由 `json.dumps(..., allow_nan=False)` 序列化的内建结构。配置模型只表达设备需要的值；`1 dB`/`0.1 dB` 调节规则、`0.2 dB` 容差和每轮安全判断由应用控制层实现。
 
 ## 3. 动态参数 schema

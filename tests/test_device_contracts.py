@@ -20,6 +20,9 @@ from remote_dpd.preprocessing import CaptureBatch
 
 
 class DeviceConfigTests(unittest.TestCase):
+    def test_default_target_power_is_minus_fifteen_dbm(self):
+        self.assertEqual(DeviceConfig().target_power_dbm, -15.0)
+
     def test_accepts_and_normalizes_valid_common_configuration(self):
         source_options = {
             "clock": "external",

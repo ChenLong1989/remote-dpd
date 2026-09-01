@@ -14,7 +14,7 @@ from remote_dpd.device import (
     list_rf_benches,
     register_rf_bench,
 )
-from remote_dpd.dsp import fractional_shift
+from remote_dpd.dsp import fractional_shift, rms
 from remote_dpd.preprocessing import FeedbackPreprocessor
 from remote_dpd.runtime import BasicILCRuntime, RuntimeStepInput
 from remote_dpd.simulation import SIMULATED_DEVICE_SCHEMA, SimulatedRFBench
@@ -89,7 +89,7 @@ class SimulatedSchemaTests(unittest.TestCase):
 
         self.assertIs(bench.parameter_schema, SIMULATED_DEVICE_SCHEMA)
         self.assertEqual(SIMULATED_DEVICE_SCHEMA.device_type, "simulated")
-        self.assertEqual(SIMULATED_DEVICE_SCHEMA.schema_version, 2)
+        self.assertEqual(SIMULATED_DEVICE_SCHEMA.schema_version, 3)
         self.assertEqual(
             {field.name for field in SIMULATED_DEVICE_SCHEMA.fields},
             {
@@ -109,10 +109,11 @@ class SimulatedSchemaTests(unittest.TestCase):
             [
                 {"p": 1, "m": 0, "real": 1.0, "imag": 0.0},
                 {"p": 1, "m": 1, "real": 0.04, "imag": 0.015},
-                {"p": 3, "m": 0, "real": -0.36, "imag": 0.075},
-                {"p": 3, "m": 1, "real": -0.06, "imag": 0.03},
+                {"p": 3, "m": 0, "real": -1.44, "imag": 0.3},
+                {"p": 3, "m": 1, "real": -0.24, "imag": 0.12},
             ],
         )
+        self.assertEqual(defaults["noise_dbfs"], -85.74)
         self.assertEqual(defaults["power_reference_dbm"], 1.0)
 
     def test_schema_rejects_unknown_and_invalid_options_during_configuration(self):
@@ -268,6 +269,7 @@ class SimulatedSignalPathTests(unittest.TestCase):
             + 0.18 * np.exp(2j * np.pi * 9 * samples / samples.size)
             + 0.08 * np.exp(-2j * np.pi * 13 * samples / samples.size)
         )
+        reference *= 10.0 ** (-15.0 / 20.0) / rms(reference)
         config = make_config(
             {
                 "system_gain_db": 0.0,
@@ -282,7 +284,7 @@ class SimulatedSignalPathTests(unittest.TestCase):
         bench = prepare_running_bench(reference, config)
         preprocessor = FeedbackPreprocessor(reference, SAMPLE_RATE_HZ)
         runtime = BasicILCRuntime()
-        runtime.initialize({"mu": 0.5})
+        runtime.initialize({"mu": 0.35})
         current = reference.copy()
         first_nmse = None
         gain = None
@@ -302,7 +304,7 @@ class SimulatedSignalPathTests(unittest.TestCase):
                     y_current=current,
                     z_current=result.z,
                     iteration=iteration,
-                    config={"mu": 0.5},
+                    config={"mu": 0.35},
                 )
             ).y_candidate
             bench.stop_transmission(TIMEOUT)

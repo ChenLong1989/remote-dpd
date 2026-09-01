@@ -14,17 +14,20 @@ from typing import Any, BinaryIO
 import numpy as np
 
 from .controller import (
+    MAX_REFERENCE_TARGET_RMS_DBFS,
+    MIN_REFERENCE_TARGET_RMS_DBFS,
     ControllerSnapshot,
     ControllerState,
     IterationRecord,
 )
 from .protocol import load_mat, load_mat_file, save_mat
 
-FINAL_RESULT_SCHEMA_VERSION = 1
+LEGACY_FINAL_RESULT_SCHEMA_VERSION = 1
+FINAL_RESULT_SCHEMA_VERSION = 2
 _FINAL_FIELDS = frozenset(
     {"schema_version", "x", "y", "z", "metrics", "config", "status", "completed_at"}
 )
-_FINAL_CONFIG_FIELDS = frozenset(
+_LEGACY_FINAL_CONFIG_FIELDS = frozenset(
     {
         "device_type",
         "device_config",
@@ -33,7 +36,11 @@ _FINAL_CONFIG_FIELDS = frozenset(
         "max_iterations",
     }
 )
-_FINAL_METRIC_FIELDS = frozenset(
+_FINAL_CONFIG_FIELDS = _LEGACY_FINAL_CONFIG_FIELDS | {
+    "normalize_reference_rms",
+    "reference_target_rms_dbfs",
+}
+_LEGACY_FINAL_METRIC_FIELDS = frozenset(
     {
         "iteration",
         "nmse_db",
@@ -46,6 +53,11 @@ _FINAL_METRIC_FIELDS = frozenset(
         "capture_batch_count",
     }
 )
+_FINAL_METRIC_FIELDS = _LEGACY_FINAL_METRIC_FIELDS | {
+    "source_rms_dbfs",
+    "reference_rms_dbfs",
+    "reference_scale_db",
+}
 
 
 class ResultExportError(ValueError):
@@ -169,8 +181,14 @@ def _validate_final_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     schema_version = _integer_scalar(raw["schema_version"], "schema_version")
-    if schema_version != FINAL_RESULT_SCHEMA_VERSION:
-        raise ResultExportError(f"schema_version must be {FINAL_RESULT_SCHEMA_VERSION}")
+    if schema_version not in {
+        LEGACY_FINAL_RESULT_SCHEMA_VERSION,
+        FINAL_RESULT_SCHEMA_VERSION,
+    }:
+        raise ResultExportError(
+            "schema_version must be "
+            f"{LEGACY_FINAL_RESULT_SCHEMA_VERSION} or {FINAL_RESULT_SCHEMA_VERSION}"
+        )
     if raw["status"] != ControllerState.COMPLETED.value:
         raise ResultExportError("final result status must be 'completed'")
 
@@ -185,10 +203,18 @@ def _validate_final_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     if x.size != y.size or x.size != z.size:
         raise ResultExportError("x, y, and z must have the same length")
 
-    config_text, config_values = _validate_loaded_config(raw["config"])
-    metrics = _validate_loaded_metrics(raw["metrics"])
+    config_text, config_values = _validate_loaded_config(
+        raw["config"],
+        schema_version=schema_version,
+    )
+    metrics = _validate_loaded_metrics(
+        raw["metrics"],
+        schema_version=schema_version,
+    )
     if metrics["iteration"] != config_values["max_iterations"]:
         raise ResultExportError("metrics.iteration must match config.max_iterations")
+    if schema_version == FINAL_RESULT_SCHEMA_VERSION:
+        _validate_loaded_normalization(config_values, metrics)
 
     return {
         "schema_version": schema_version,
@@ -212,7 +238,11 @@ def _validate_record_types(
         raise ResultExportError("final record must be an IterationRecord")
 
 
-def _validate_loaded_config(value: object) -> tuple[str, dict[str, Any]]:
+def _validate_loaded_config(
+    value: object,
+    *,
+    schema_version: int,
+) -> tuple[str, dict[str, Any]]:
     if not isinstance(value, str):
         raise ResultExportError("config must be a strict JSON string")
     try:
@@ -227,7 +257,12 @@ def _validate_loaded_config(value: object) -> tuple[str, dict[str, Any]]:
         raise ResultExportError(f"config is not strict JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ResultExportError("config JSON must be an object")
-    if set(parsed) != _FINAL_CONFIG_FIELDS:
+    expected_fields = (
+        _LEGACY_FINAL_CONFIG_FIELDS
+        if schema_version == LEGACY_FINAL_RESULT_SCHEMA_VERSION
+        else _FINAL_CONFIG_FIELDS
+    )
+    if set(parsed) != expected_fields:
         raise ResultExportError("config JSON fields differ from the final contract")
     device_type = parsed["device_type"]
     if not isinstance(device_type, str) or not re.fullmatch(
@@ -246,13 +281,41 @@ def _validate_loaded_config(value: object) -> tuple[str, dict[str, Any]]:
         raise ResultExportError("config.max_iterations must be an integer")
     if max_iterations <= 0:
         raise ResultExportError("config.max_iterations must be positive")
+    if schema_version == FINAL_RESULT_SCHEMA_VERSION:
+        normalize_reference_rms = parsed["normalize_reference_rms"]
+        if not isinstance(normalize_reference_rms, bool):
+            raise ResultExportError("config.normalize_reference_rms must be a boolean")
+        target_rms_dbfs = parsed["reference_target_rms_dbfs"]
+        if isinstance(target_rms_dbfs, bool) or not isinstance(
+            target_rms_dbfs,
+            (int, float),
+        ):
+            raise ResultExportError("config.reference_target_rms_dbfs must be a number")
+        target_rms_dbfs = float(target_rms_dbfs)
+        if not math.isfinite(target_rms_dbfs) or not (
+            MIN_REFERENCE_TARGET_RMS_DBFS
+            <= target_rms_dbfs
+            <= MAX_REFERENCE_TARGET_RMS_DBFS
+        ):
+            raise ResultExportError(
+                "config.reference_target_rms_dbfs is outside the supported range"
+            )
     return value, parsed
 
 
-def _validate_loaded_metrics(value: object) -> dict[str, int | float]:
+def _validate_loaded_metrics(
+    value: object,
+    *,
+    schema_version: int,
+) -> dict[str, int | float]:
     if not isinstance(value, Mapping):
         raise ResultExportError("metrics must be a MATLAB struct")
-    if set(value) != _FINAL_METRIC_FIELDS:
+    expected_fields = (
+        _LEGACY_FINAL_METRIC_FIELDS
+        if schema_version == LEGACY_FINAL_RESULT_SCHEMA_VERSION
+        else _FINAL_METRIC_FIELDS
+    )
+    if set(value) != expected_fields:
         raise ResultExportError("metrics fields differ from the final contract")
     iteration = _integer_scalar(value["iteration"], "metrics.iteration")
     segment_count = _integer_scalar(
@@ -272,7 +335,7 @@ def _validate_loaded_metrics(value: object) -> dict[str, int | float]:
         "capture_segment_count": segment_count,
         "capture_batch_count": batch_count,
     }
-    for name in _FINAL_METRIC_FIELDS - {
+    for name in expected_fields - {
         "iteration",
         "capture_segment_count",
         "capture_batch_count",
@@ -281,6 +344,36 @@ def _validate_loaded_metrics(value: object) -> dict[str, int | float]:
     if metrics["gain_correction"] <= 0.0:
         raise ResultExportError("metrics.gain_correction must be positive")
     return metrics
+
+
+def _validate_loaded_normalization(
+    config: Mapping[str, Any],
+    metrics: Mapping[str, int | float],
+) -> None:
+    source_rms_dbfs = float(metrics["source_rms_dbfs"])
+    reference_rms_dbfs = float(metrics["reference_rms_dbfs"])
+    reference_scale_db = float(metrics["reference_scale_db"])
+    if not math.isclose(
+        reference_rms_dbfs - source_rms_dbfs,
+        reference_scale_db,
+        rel_tol=0.0,
+        abs_tol=1e-10,
+    ):
+        raise ResultExportError("reference normalization metrics are inconsistent")
+    if config["normalize_reference_rms"]:
+        if not math.isclose(
+            reference_rms_dbfs,
+            float(config["reference_target_rms_dbfs"]),
+            rel_tol=0.0,
+            abs_tol=1e-10,
+        ):
+            raise ResultExportError(
+                "metrics.reference_rms_dbfs does not match the configured target"
+            )
+    elif not math.isclose(reference_scale_db, 0.0, rel_tol=0.0, abs_tol=1e-10):
+        raise ResultExportError(
+            "bypassed reference normalization must report zero scale dB"
+        )
 
 
 def _loaded_signal(value: object, name: str) -> np.ndarray:
@@ -400,6 +493,68 @@ def _build_metrics(
             "capture_segment_count does not match final batch diagnostics"
         )
 
+    normalization = snapshot.reference_normalization
+    if normalization is None:
+        raise ResultExportError("completed snapshot is missing reference normalization")
+    config = snapshot.config
+    if config is None:  # pragma: no cover - guarded by build_final_payload
+        raise ResultExportError("completed snapshot is missing its effective config")
+    if normalization.enabled is not config.normalize_reference_rms:
+        raise ResultExportError(
+            "reference normalization report does not match the effective config"
+        )
+    if not math.isclose(
+        normalization.target_rms_dbfs,
+        config.reference_target_rms_dbfs,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ResultExportError(
+            "reference normalization target does not match the effective config"
+        )
+    source_rms_dbfs = _finite_metric(
+        normalization.source_rms_dbfs,
+        "source_rms_dbfs",
+    )
+    reference_rms_dbfs = _finite_metric(
+        normalization.effective_rms_dbfs,
+        "reference_rms_dbfs",
+    )
+    reference_scale_db = _finite_metric(
+        normalization.scale_db,
+        "reference_scale_db",
+    )
+    reference = snapshot.x
+    if reference is None:  # pragma: no cover - guarded by build_final_payload
+        raise ResultExportError("completed snapshot is missing reference waveform x")
+    actual_reference_rms = float(np.sqrt(np.mean(np.abs(reference) ** 2)))
+    if not math.isclose(
+        normalization.effective_rms,
+        actual_reference_rms,
+        rel_tol=1e-12,
+        abs_tol=1e-15,
+    ):
+        raise ResultExportError(
+            "reference normalization report does not match the effective x"
+        )
+    if not math.isclose(
+        normalization.scale_db,
+        normalization.effective_rms_dbfs - normalization.source_rms_dbfs,
+        rel_tol=0.0,
+        abs_tol=1e-10,
+    ):
+        raise ResultExportError("reference normalization scale is inconsistent")
+    if normalization.enabled:
+        if not math.isclose(
+            normalization.effective_rms_dbfs,
+            normalization.target_rms_dbfs,
+            rel_tol=0.0,
+            abs_tol=1e-10,
+        ):
+            raise ResultExportError("effective reference RMS does not match its target")
+    elif not math.isclose(normalization.scale, 1.0, rel_tol=0.0, abs_tol=1e-15):
+        raise ResultExportError("bypassed reference normalization must use unit scale")
+
     return {
         "iteration": final_record.iteration,
         "nmse_db": nmse_db,
@@ -410,6 +565,9 @@ def _build_metrics(
         "gain_correction": gain_correction,
         "capture_segment_count": capture_segment_count,
         "capture_batch_count": capture_batch_count,
+        "source_rms_dbfs": source_rms_dbfs,
+        "reference_rms_dbfs": reference_rms_dbfs,
+        "reference_scale_db": reference_scale_db,
     }
 
 

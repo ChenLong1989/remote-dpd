@@ -24,7 +24,7 @@ connect -> configure -> upload_waveform -> start_transmission
 
 ## 2. 动态配置 schema
 
-`SIMULATED_DEVICE_SCHEMA` 的设备类型为 `simulated`，版本为 2，公开以下可由后续网页动态编辑的字段：
+`SIMULATED_DEVICE_SCHEMA` 的设备类型为 `simulated`，版本为 3，公开以下可由网页动态编辑的字段：
 
 | 字段 | 当前默认值 | 含义 |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ connect -> configure -> upload_waveform -> start_transmission
 | `system_gain_db` | `-6.0` | 反馈采集路径固定幅度增益 |
 | `system_phase_rad` | `0.35` | 反馈采集路径固定整体相位 |
 | `delay_samples` | `2.25` | 周期小数时延 |
-| `noise_dbfs` | `-80.0` | 复高斯噪声的复包络 RMS |
+| `noise_dbfs` | `-85.74` | 复高斯噪声的复包络 RMS |
 | `random_seed` | `42` | 可复现噪声随机种子 |
 | `power_reference_dbm` | `1.0` | 无噪 PA 输出 RMS 为 1 时的功率标定值 |
 | `max_capture_samples` | `1000000` | 单次 `capture()` 最大样点数 |
@@ -61,10 +61,10 @@ pa[n] = sum(a[p,m] * u[n-m] * abs(u[n-m]) ** (p-1))
 | ---: | ---: | ---: |
 | 1 | 0 | `1.0+0.0j` |
 | 1 | 1 | `0.04+0.015j` |
-| 3 | 0 | `-0.36+0.075j` |
-| 3 | 1 | `-0.06+0.03j` |
+| 3 | 0 | `-1.44+0.30j` |
+| 3 | 1 | `-0.24+0.12j` |
 
-在当前 `10×20 MHz @ 491.52 MS/s` 默认 waveform、`-10 dBm` 目标和 Web quick-start 的 `mu=0.35`、15 次 ILC 下，功率调节锁定约 `1.6 dB`。以左右最外侧 20 MHz 载波为 main、紧邻外侧 20 MHz 为 adjacent，第 0 轮分别为 `-30.73/-31.80 dBc`，第 15 轮为 `-57.98/-59.83 dBc`；NMSE 从约 `-27.19 dB` 改善到 `-54.89 dB`，最终数字峰值约 `0.985`。该结论只保证当前默认 waveform 和预设，不保证用户任意系数组合收敛。
+在当前 `10×20 MHz @ 491.52 MS/s` 默认 waveform、reference RMS `-15 dBFS`、物理目标 `-15 dBm` 和 Web quick-start 的 `mu=0.35`、15 次 ILC 下，功率调节锁定约 `0.7 dB/-15.16 dBm`。以左右最外侧 20 MHz 载波为 main、紧邻外侧 20 MHz 为 adjacent，第 0 轮分别为 `-28.19/-29.29 dBc`，第 15 轮为 `-38.92/-40.58 dBc`；NMSE 从约 `-24.84 dB` 改善到 `-35.85 dB`，最终数字峰值约 `0.710`。该结论只保证当前默认 waveform 和预设，不保证用户任意系数组合收敛。
 
 ## 4. 反馈与抓取
 

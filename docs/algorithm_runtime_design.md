@@ -25,7 +25,7 @@ created -> initialize(config) -> step(...) * N -> reset()
 - 非负迭代号；
 - 本次不可变配置。
 
-三个波形必须一维、非空、有限、数值型且等长。波形副本使用不可写底层缓冲区，不能通过重新打开 NumPy write flag 修改。配置和指标仅接受可递归冻结的标量、mapping、sequence 和非 object NumPy array；嵌套 mapping、sequence 和 array 均与调用方分离且不可变，非有限数值和任意可变对象被拒绝。`RuntimeStepResult` 返回同样不可变的候选 `y_candidate` 和结构化指标。runtime 不得读取设备、原始抓取、网页或 MAT 文件，也不得做时延/相位/增益预处理、AGC、归一化、削峰或安全裁剪。
+三个波形必须一维、非空、有限、数值型且等长；其中固定 `x` 已由 controller 完成配置化 RMS conditioning。波形副本使用不可写底层缓冲区，不能通过重新打开 NumPy write flag 修改。配置和指标仅接受可递归冻结的标量、mapping、sequence 和非 object NumPy array；嵌套 mapping、sequence 和 array 均与调用方分离且不可变，非有限数值和任意可变对象被拒绝。`RuntimeStepResult` 返回同样不可变的候选 `y_candidate` 和结构化指标。runtime 不得读取设备、原始抓取、网页或 MAT 文件，也不得自行做时延/相位/增益预处理、AGC、归一化、削峰或安全裁剪。
 
 ## 2. 基础 ILC
 

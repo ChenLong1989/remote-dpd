@@ -3,7 +3,8 @@
 `remote-dpd` 是一个不依赖 MATLAB 的设备直控 ILC DPD 闭环服务。当前版本提供：
 
 - 可扩展的发射、接收、功率测量和组合式 `RFBench` 契约；
-- 带有记忆多项式 PA、TX 衰减、反馈扰动和功率测量的确定性仿真设备；v2 默认 PA 在当前 10×20 MHz waveform 上产生约 `-30 dBc` 初始外邻道失真；
+- 带有记忆多项式 PA、TX 衰减、反馈扰动和功率测量的确定性仿真设备；v3 默认 PA 在当前 10×20 MHz waveform 上产生约 `-28/-29 dBc` 初始外邻道失真；
+- 默认开启的 source reference RMS conditioning，目标 `-15 dBFS`；公共默认物理目标功率为 `-15 dBm`；
 - 独立反馈预处理、基础 ILC runtime、数字波形安全和物理功率安全；
 - 分步或自动的单任务闭环控制器；
 - 自动清理的完整临时运行记录和最终 MAT 正式结果；
@@ -56,7 +57,7 @@ remote-dpd \
 - 弹窗式公共设备配置、动态专属 schema、仿真 PA 系数和 measurement-band 编辑；
 - connect/disconnect、load/configure、start/stop TX、power tune、calibrate、ILC step、reset/export 分步操作和一键自动闭环；
 - 默认 simulated bench 与首个 waveform 的一键完整闭环、固定 RF abort、controller/channel 状态、功率调节和对齐诊断；
-- 全新页面从服务端获得确定的 Web quick-start profile，不读取浏览器存储或历史 run；当前 profile 使用 `491.52 MS/s`、十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC；
+- 全新页面从服务端获得确定的 Web quick-start profile，不读取浏览器存储或历史 run；当前 profile 使用 `491.52 MS/s`、reference RMS `-15 dBFS`、Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`mu=0.35` 和 15 次 ILC；
 - 完整周期 `Z₀/Zₙ/Eₙ` 频谱、Trace/Marker、默认 10TX+2 adjacent ACLR 模板、分 reference 的 dBc/channel-power bar、PAPR、AM/AM、AM/PM 和 NMSE 改善；
 - 临时 run、任意历史轮次重新分析、结构化事件和最终 MAT 下载。
 
@@ -108,12 +109,12 @@ Web 与外部 MAT 命令共用同一个普通命令 worker 和 stop latch，任�
 
 成功的 `run` 或显式 `export` 生成不含迭代历史的正式 MAT：
 
-- `x`：原始参考波形；
+- `x`：完成配置化 RMS conditioning 后实际用于闭环的生效参考波形；
 - `y`：最终实际发射并评价的 DPD 波形；
 - `z`：对应的最终预处理反馈；
-- `metrics`：最终 NMSE、数字功率、物理功率、衰减、固定增益和抓取计数；
+- `metrics`：最终 NMSE、数字功率、物理功率、衰减、固定增益、抓取计数和 reference RMS/scale 来源指标；
 - `config`：可由 MATLAB `jsondecode` 解析的实际生效配置；
-- `status`、`schema_version` 和 `completed_at`。
+- `status`、`schema_version=2` 和 `completed_at`；reader 仍兼容既有 schema 1 结果。
 
 完整迭代只保存在临时运行目录，正式结果不会包含历史波形。
 

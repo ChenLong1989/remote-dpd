@@ -112,7 +112,6 @@ class WaveformRepositoryTests(unittest.TestCase):
             "matrix.mat": {"x": np.ones((2, 2))},
             "logical.mat": {"x": np.asarray([True, False])},
             "nan.mat": {"x": np.asarray([0.1, np.nan])},
-            "peak.mat": {"x": np.asarray([1.01, 0.1])},
             "zero.mat": {"x": np.zeros(16)},
             "sparse.mat": {"x": csr_matrix(np.eye(4))},
         }
@@ -126,6 +125,19 @@ class WaveformRepositoryTests(unittest.TestCase):
         (self.root / "broken.mat").write_bytes(b"not a MAT file")
         with self.assertRaises(WaveformAccessError):
             self.repository.load_x("broken.mat")
+
+    def test_source_peak_above_full_scale_is_reported_but_not_rejected(self):
+        savemat(self.root / "source-peak.mat", {"x": np.asarray([1.5, 0.1])})
+
+        loaded = self.repository.load_x("source-peak.mat")
+        preview = self.repository.preview("source-peak.mat", points=16)
+
+        np.testing.assert_array_equal(loaded, np.asarray([1.5, 0.1]))
+        self.assertFalse(preview["safety"]["passed"])
+        self.assertIn(
+            "reference_peak_exceeded",
+            preview["safety"]["violations"],
+        )
 
     def test_file_and_sample_limits_are_enforced(self):
         small_file_repository = WaveformRepository(self.root, max_bytes=32)

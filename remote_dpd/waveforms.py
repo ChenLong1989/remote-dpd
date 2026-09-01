@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from .safety import DigitalSafetyError, validate_reference
+from .safety import check_reference
 
 DEFAULT_MAX_WAVEFORM_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_WAVEFORM_SAMPLES = 10_000_000
@@ -224,14 +224,7 @@ class WaveformRepository:
                 "invalid_waveform",
                 "x must contain only finite samples",
             )
-        try:
-            report = validate_reference(copied)
-        except DigitalSafetyError as exc:
-            violations = ", ".join(exc.report.violations)
-            raise WaveformAccessError(
-                "unsafe_waveform",
-                f"x failed digital safety checks: {violations}",
-            ) from exc
+        report = check_reference(copied)
         if report.reference_rms == 0.0:
             raise WaveformAccessError(
                 "unsafe_waveform",
@@ -251,7 +244,7 @@ class WaveformRepository:
         x = self.load_x(relative_path)
         indices = _sample_indices(x.size, normalized_points)
         selected = x[indices]
-        report = validate_reference(x)
+        report = check_reference(x)
         return {
             "path": relative_path,
             "sample_count": int(x.size),

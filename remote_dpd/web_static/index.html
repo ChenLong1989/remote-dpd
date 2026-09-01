@@ -8,7 +8,7 @@
       content="Single-screen RF workbench for iterative digital predistortion control and analysis."
     />
     <title>Remote DPD RF Workbench</title>
-    <link rel="stylesheet" href="/static/styles.css?v=single-screen-4" />
+    <link rel="stylesheet" href="/static/styles.css?v=single-screen-5" />
   </head>
   <body>
     <header class="instrument-header">
@@ -138,6 +138,8 @@
             <label><span>RF bench</span><select id="device-select" disabled><option value="simulated">Simulated RF bench</option></select></label>
             <label><span>Center frequency</span><div class="unit-control"><input id="center-frequency" value="3500" /><b>MHz</b></div></label>
             <label><span>Sample rate</span><div class="unit-control"><input id="sample-rate" value="983.04" /><b>MS/s</b></div></label>
+            <label class="toggle-field"><span>Normalize reference RMS</span><div><input id="normalize-reference-rms" type="checkbox" checked /><strong>ENABLED</strong></div></label>
+            <label><span>Reference target RMS</span><div class="unit-control"><input id="reference-target-rms" value="-15" /><b>dBFS</b></div></label>
             <label><span>TX channel</span><input id="tx-channel" value="0" /></label>
             <label><span>RX channel</span><input id="rx-channel" value="0" /></label>
             <label><span>Trigger</span><input id="trigger-source" value="immediate" /></label>
@@ -150,7 +152,7 @@
         <section class="config-panel" data-config-panel="power">
           <div class="section-heading"><span>02</span><div><small>POWER & SAFETY</small><h3>Output Control Limits</h3></div></div>
           <div class="field-grid power-grid">
-            <label><span>Target power</span><div class="unit-control"><input id="target-power" value="-10" /><b>dBm</b></div></label>
+            <label><span>Target power</span><div class="unit-control"><input id="target-power" value="-15" /><b>dBm</b></div></label>
             <label><span>Safety limit</span><div class="unit-control"><input id="safety-power" value="0" /><b>dBm</b></div></label>
             <label><span>Initial attenuation</span><div class="unit-control"><input id="initial-attenuation" value="30" /><b>dB</b></div></label>
             <label><span>Minimum attenuation</span><div class="unit-control"><input id="minimum-attenuation" value="0" /><b>dB</b></div></label>
@@ -238,6 +240,6 @@
       <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
     </dialog>
 
-    <script src="/static/app.js?v=single-screen-4" defer></script>
+    <script src="/static/app.js?v=single-screen-5" defer></script>
   </body>
 </html>

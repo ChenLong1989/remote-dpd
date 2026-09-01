@@ -1,6 +1,8 @@
 """Device-driven DPD simulation, orchestration, and file command service."""
 
 from .controller import (
+    DEFAULT_NORMALIZE_REFERENCE_RMS,
+    DEFAULT_REFERENCE_TARGET_RMS_DBFS,
     ClosedLoopConfig,
     ClosedLoopController,
     ControllerBusyError,
@@ -10,6 +12,7 @@ from .controller import (
     ControllerStateError,
     ControllerStoppedError,
     IterationRecord,
+    ReferenceNormalizationReport,
 )
 from .device import (
     CaptureRequest,
@@ -60,6 +63,8 @@ from .web import create_web_app
 from .web_bridge import WebBridgeError, WebCommandBridge
 
 __all__ = [
+    "DEFAULT_NORMALIZE_REFERENCE_RMS",
+    "DEFAULT_REFERENCE_TARGET_RMS_DBFS",
     "SIMULATED_DEVICE_SCHEMA",
     "BasicILCRuntime",
     "CaptureBatch",
@@ -90,6 +95,7 @@ __all__ = [
     "PowerController",
     "PreprocessingResult",
     "RFBench",
+    "ReferenceNormalizationReport",
     "ResultExportError",
     "RunRecorder",
     "RunStorageError",

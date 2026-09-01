@@ -23,7 +23,7 @@
         └── aligned_average.npy
 ```
 
-`create_run()` 保存实际生效的 `ClosedLoopConfig` 和参考 `x`，返回创建后立即处于 active 清理保护的 `RunRecorder`。默认 `run_id` 为 UUID；外部指定值只能包含受限 ASCII 字符，不能构造路径层级。
+`create_run()` 保存实际生效的 `ClosedLoopConfig` 和 controller 已完成 RMS conditioning 的生效参考 `x`，返回创建后立即处于 active 清理保护的 `RunRecorder`。源 MAT 幅度不复制到 run；归一化来源由配置和 snapshot 报告追溯。默认 `run_id` 为 UUID；外部指定值只能包含受限 ASCII 字符，不能构造路径层级。
 
 ## 2. Manifest 和完整迭代
 
@@ -39,7 +39,7 @@ manifest schema 当前为 `1.0`，固定包含：
 - 状态转换和结构化错误进入 `events.json`；
 - 初始调功率的完整轨迹进入 `power_trace.json`；
 - 每个 `IterationRecord` 保存 `y`、`z`、增益应用前 `aligned_average` 和完整 JSON 指标；
-- snapshot 元数据包含当前状态、固定增益、锁定衰减、最新功率和最后错误。
+- snapshot 元数据包含当前状态、固定增益、锁定衰减、最新功率、reference normalization 报告和最后错误。
 
 同一 snapshot 重放不改文件时间。相同轮次若出现不同波形或元数据，抛出 `RunConflictError`，不会覆盖已提交 artifact。运行达到 `completed`、`failed` 或 `stopped` 且 manifest 成功落盘后，recorder 自动释放其初始 active guard。
 
@@ -76,19 +76,19 @@ JSON、NumPy 和 MAT artifact 都先写同目录唯一临时文件，再使用 `
 - 最终预处理仍复用第 0 轮固定增益；
 - NMSE、功率、衰减和抓取计数均有效。
 
-正式文件 schema 当前为 1，固定变量如下：
+新生成正式文件 schema 为 2，固定变量如下；reader 和崩溃恢复仍接受既有 schema 1 缓存。
 
 | 变量 | 类型与含义 |
 | --- | --- |
-| `schema_version` | 整数 1 |
-| `x` | 复数列向量，原始参考 |
+| `schema_version` | 新文件为整数 2；旧文件 1 只读兼容 |
+| `x` | 复数列向量，RMS conditioning 后的生效参考 |
 | `y` | 复数列向量，最终已发射并评价波形 |
 | `z` | 复数列向量，对应最终预处理反馈 |
-| `metrics` | MATLAB struct，包含最终轮、NMSE、数字 RMS/峰值、物理功率、衰减、固定增益和抓取计数 |
+| `metrics` | MATLAB struct，包含最终轮、NMSE、数字 RMS/峰值、物理功率、衰减、固定增益、抓取计数、source/effective RMS dBFS 和 reference scale dB |
 | `config` | 严格 JSON 字符串，保存实际生效配置；MATLAB 使用 `jsondecode` 读取 |
 | `status` | `completed` |
 | `completed_at` | UTC ISO 8601 字符串 |
 
-`config` 顶层包含设备注册名 `device_type`，其余字段与实际生效的 `ClosedLoopConfig` 一致，可直接作为新文件入口的配置重新解析。`completed_at` 来自 controller 实际进入终态的时刻，不是用户稍后点击导出的时刻。
+`config` 顶层包含设备注册名 `device_type`，其余字段与实际生效的 `ClosedLoopConfig` 一致，包括归一化开关与目标，可直接作为新文件入口的配置重新解析。schema 1 config/metrics 没有归一化字段，按 legacy 未归一化结果读取；已有完成缓存仍可补交。`completed_at` 来自 controller 实际进入终态的时刻，不是用户稍后点击导出的时刻。
 
 正式结果不包含迭代历史。正常完成时同一内容先进入 run 内的可恢复缓存；文件入口在 `RunStore.export_guard()` 保护下把缓存原子发布到 outbox。无存储的程序化调用仍可直接原子导出；失败不会留下部分正式结果。
