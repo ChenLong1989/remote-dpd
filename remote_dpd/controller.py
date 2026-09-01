@@ -7,7 +7,7 @@ import numbers
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from threading import Event, Lock, RLock
@@ -397,6 +397,13 @@ class ClosedLoopController:
                 timeout = effective_config.device_config.call_timeout_seconds
                 candidate_runtime = create_runtime(effective_config.runtime_name)
                 candidate_runtime.initialize(effective_config.runtime_config)
+                # Keep the runtime's normalized configuration (defaults filled
+                # in) as the effective one, so stored and exported configs
+                # describe the parameters that actually execute.
+                effective_config = replace(
+                    effective_config,
+                    runtime_config=candidate_runtime.config,
+                )
                 self._stop_tx_if_needed(timeout)
                 self._check_stop()
                 self._bench.configure(

@@ -528,6 +528,19 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
         )
         self.assertLess(history[-1], history[0] - 5.0)
         self.assertTrue(all(record.digital_safety.passed for record in result.records))
+        # The effective runtime configuration recorded after the run must
+        # include every normalized default, not only the caller-supplied mu.
+        recorded = dict(result.config.runtime_config)
+        self.assertEqual(
+            recorded,
+            {
+                "mu": 1.0,
+                "orders": (1, 3, 5),
+                "memory_depths": (0, 1, 2),
+                "ridge": 1e-8,
+            },
+        )
+        json.dumps(result.config.to_dict(), allow_nan=False)
 
     def test_forward_model_ilc_converges_fast_on_mild_pa(self):
         from remote_dpd import ControllerState
