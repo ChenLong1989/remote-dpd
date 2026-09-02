@@ -16,14 +16,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Real-station adapter (remote_dpd.real_bench) driver packages. The NI device
-# drivers themselves (NI-VISA, NI-RFSG, NI-RFSA) are provided by the station
-# software stack and are not installable from PyPI.
+# Real-station adapter (remote_dpd.real_bench) packages. The adapter talks to
+# the PXIe-5842 through the NI RFIC SCPI server over NI-VISA and writes NI
+# RFmx-style TDMS waveforms with nptdms; the NI software stack (NI-VISA, RFIC
+# Test Software) is provided by the station and is not installable from PyPI.
 real-hardware = [
     "PyVISA>=1.15",
-    "nirfsg>=1.2",
-    "nirfsa>=1.0",
-    "nitclk>=1.5",
+    "nptdms>=1.11",
 ]
 
 [project.scripts]

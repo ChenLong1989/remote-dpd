@@ -1,9 +1,24 @@
 """Real RF bench adapter for the local NI RFIC test station.
 
-The bench combines one NI PXIe-5842 VST (transmitter and receiver through the
-NI-RFSG / NI-RFSA driver sessions), one Agilent N1912A power meter, and one
-Agilent N5767A drain supply guard, all exposed through the standard capability
-contracts in ``remote_dpd.device`` and registered under ``vst5842``.
+The bench drives one NI PXIe-5842 VST through the NI RFIC SCPI server (the
+loopback VXI-11 resource also used by InstrumentStudio and the station's
+MATLAB client), plus one Agilent N1912A power meter and one Agilent N5767A
+drain supply guard, all exposed through the standard capability contracts in
+``remote_dpd.device`` and registered under ``vst5842``.
+
+Why SCPI instead of the nirfsg/nirfsa driver API: on the 5842+5655 system
+the receiver LO and downconverter resources are owned by the NI RFIC
+software stack, and bare driver sessions cannot reliably reserve them
+(persistent LO states and cross-switch conflicts observed on this station).
+The RFIC SCPI server is the supported sharing path, so both transmit and
+receive go through it:
+
+- Transmitter: RFSG ARB playback of a TDMS waveform written into the RFIC
+  SCPI Waveforms directory; TX attenuation maps to
+  ``reference_power_dbm - attenuation`` at the RFSG power level.
+- Receiver: RFmx SpecAn IQ acquisitions; the trace block returned by
+  ``FETCh:SPECan:RESult:IQ:TRACe:DATA?`` is big-endian float32
+  interleaved I/Q and is decoded accordingly.
 
 Hard safety constraints for the GaN PA under test:
 
@@ -18,9 +33,12 @@ Hard safety constraints for the GaN PA under test:
 from __future__ import annotations
 
 import math
+import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from numbers import Real
+from pathlib import Path
 
 import numpy as np
 
@@ -39,27 +57,44 @@ from .device import (
 )
 from .preprocessing import CaptureBatch
 
-_WAVEFORM_NAME = "rdpdWave"
-_SCRIPT_NAME = "rdpdCyclic"
-_CYCLE_SCRIPT = (
-    f"script {_SCRIPT_NAME}\n"
-    "repeat forever\n"
-    f"generate {_WAVEFORM_NAME}\n"
-    "end repeat\n"
-    "end script\n"
+_DEFAULT_WAVEFORMS_DIRECTORY = (
+    r"C:\Users\Public\Documents\National Instruments\RFIC SCPI\Waveforms"
 )
+_WAVEFORM_FILE_NAME = "rdpd_wave.tdms"
+_TDMS_GROUP_NAME = "waveforms"
+_TDMS_CHANNEL_NAME = "Channel 0"
+#: The SCPI server rounds the acquisition time to whole samples; a few
+#: guard samples make sure the decoded trace never comes up short.
+_CAPTURE_GUARD_SAMPLES = 32
+#: Fixed overhead observed between INITiate:SPECan and a fetchable result.
+_CAPTURE_SETTLE_SECONDS = 2.0
 _DEFAULT_AUX_SUPPLY_RESOURCES = ("GPIB1::7::INSTR", "GPIB1::8::INSTR")
 _AUX_VOLTAGE_TOLERANCE_V = 0.5
+#: The SCPI server splices the waveform name into its playback script, so
+#: only plain alphanumerics are accepted; matching is case-insensitive.
+_WAVEFORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 
 VST5842_DEVICE_SCHEMA = DeviceParameterSchema(
     device_type="vst5842",
-    schema_version=1,
+    schema_version=2,
     fields=(
         DeviceParameterField(
-            name="vst_resource",
+            name="scpi_resource",
             value_type=DeviceParameterType.STRING,
-            default="PXI2Slot2",
-            description="NI-RFSG/NI-RFSA device name of the PXIe-5842 VST.",
+            default="TCPIP0::127.0.0.1::inst0::INSTR",
+            description=(
+                "VISA resource of the NI RFIC SCPI server loopback session "
+                "that owns the PXIe-5842 transmit and receive chains."
+            ),
+        ),
+        DeviceParameterField(
+            name="instrument_config_file",
+            value_type=DeviceParameterType.STRING,
+            default="Instrument_2_PXI2Slot2.rfmxconfig",
+            description=(
+                "InstrumentStudio export (receiver ACP+IQ setup, reference "
+                "level and external attenuation baseline) loaded on configure."
+            ),
         ),
         DeviceParameterField(
             name="reference_power_dbm",
@@ -76,12 +111,45 @@ VST5842_DEVICE_SCHEMA = DeviceParameterSchema(
             name="reference_level_dbm",
             value_type=DeviceParameterType.NUMBER,
             minimum=-60.0,
-            maximum=99.9,
-            default=55.0,
+            maximum=120.0,
+            default=50.0,
             unit="dBm",
             description=(
-                "RFSA reference level; matches the station GUI and implicitly "
-                "accounts for the RX front-end external attenuation."
+                "SpecAn reference level at the PA-output scale, matching the "
+                "station GUI (InstrumentStudio displays 50.0 dBm)."
+            ),
+        ),
+        DeviceParameterField(
+            name="external_attenuation_db",
+            value_type=DeviceParameterType.NUMBER,
+            minimum=0.0,
+            maximum=100.0,
+            default=53.5,
+            unit="dB",
+            description=(
+                "Attenuation between the PA output and the VST RF input; "
+                "applied as the SpecAn external attenuation so decoded "
+                "traces stay on the PA-output scale."
+            ),
+        ),
+        DeviceParameterField(
+            name="waveform_name",
+            value_type=DeviceParameterType.STRING,
+            default="RDPD1",
+            description=(
+                "Server-side waveform name for ARB playback. Alphanumeric "
+                "only (the server embeds the name in its playback script, "
+                "so underscores and symbols are rejected) and matched "
+                "case-insensitively; the adapter upper-cases it."
+            ),
+        ),
+        DeviceParameterField(
+            name="waveforms_directory",
+            value_type=DeviceParameterType.STRING,
+            default=_DEFAULT_WAVEFORMS_DIRECTORY,
+            description=(
+                "RFIC SCPI Waveforms directory; uploaded TDMS files are "
+                "written here before MMEMory:LOAD:WAVeform."
             ),
         ),
         DeviceParameterField(
@@ -197,11 +265,63 @@ def _copy_waveform(waveform: np.ndarray) -> np.ndarray:
     return result
 
 
+def _write_tdms_waveform(
+    path: Path,
+    waveform: np.ndarray,
+    sample_rate_hz: float,
+) -> None:
+    """Write one NI RFmx-style InterleavedIQCluster TDMS waveform file."""
+
+    # Deferred: nptdms belongs to the optional real-hardware dependency group.
+    from nptdms import ChannelObject, GroupObject, TdmsWriter
+
+    interleaved = np.empty(waveform.size * 2, dtype=np.float32)
+    interleaved[0::2] = waveform.real
+    interleaved[1::2] = waveform.imag
+    magnitude = np.abs(waveform)
+    peak = float(np.max(magnitude))
+    rms = float(np.sqrt(np.mean(magnitude**2)))
+    papr_db = 20.0 * math.log10(peak / rms) if rms > 0.0 else 0.0
+    group = GroupObject(
+        _TDMS_GROUP_NAME,
+        {
+            "description": "",
+            "Application": "NI-RFmx Waveform Creator",
+            "NI_RF_WaveformFileVersion": "2.0.0",
+        },
+    )
+    channel = ChannelObject(
+        _TDMS_GROUP_NAME,
+        _TDMS_CHANNEL_NAME,
+        interleaved,
+        {
+            "description": "",
+            "unit_string": "",
+            "NI_RF_IQRate": float(sample_rate_hz),
+            "NI_RF_SignalBandwidth": 0.8 * float(sample_rate_hz),
+            "NI_RF_WaveformType": "InterleavedIQCluster",
+            "NI_RF_PAPR": papr_db,
+            "NI_RF_RuntimeScaling": 0.0,
+            # Native RFmx waveform files carry the complex-sample period here
+            # (NI_RF_IQRate^-1) even though the channel stores interleaved
+            # float32; MEMory:WAVeform:DX? echoes this value.
+            "dt": 1.0 / float(sample_rate_hz),
+            "t0": 0.0,
+        },
+    )
+    with TdmsWriter(str(path)) as writer:
+        writer.write_segment([group, channel])
+
+
 @dataclass(frozen=True, slots=True)
 class _BenchSettings:
-    vst_resource: str
+    scpi_resource: str
+    instrument_config_file: str
     reference_power_dbm: float
     reference_level_dbm: float
+    external_attenuation_db: float
+    waveform_name: str
+    waveforms_directory: str
     power_meter_resource: str
     power_meter_average: int
     supply_resource: str
@@ -217,14 +337,26 @@ def _settings_from_options(options: dict[str, object]) -> _BenchSettings:
         raise TypeError("aux_supply_resources must be an array of strings")
     if not aux:
         raise ValueError("aux_supply_resources must not be empty")
+    waveform_name = str(options["waveform_name"])
+    if not _WAVEFORM_NAME_PATTERN.fullmatch(waveform_name):
+        raise ValueError(
+            "waveform_name must contain only ASCII letters and digits "
+            "(the SCPI server embeds it in its playback script)"
+        )
     return _BenchSettings(
-        vst_resource=str(options["vst_resource"]),
+        scpi_resource=str(options["scpi_resource"]),
+        instrument_config_file=str(options["instrument_config_file"]),
         reference_power_dbm=_finite_real(
             "reference_power_dbm", options["reference_power_dbm"]
         ),
         reference_level_dbm=_finite_real(
             "reference_level_dbm", options["reference_level_dbm"]
         ),
+        external_attenuation_db=_finite_real(
+            "external_attenuation_db", options["external_attenuation_db"]
+        ),
+        waveform_name=waveform_name.upper(),
+        waveforms_directory=str(options["waveforms_directory"]),
         power_meter_resource=str(options["power_meter_resource"]),
         power_meter_average=int(options["power_meter_average"]),
         supply_resource=str(options["supply_resource"]),
@@ -236,16 +368,16 @@ def _settings_from_options(options: dict[str, object]) -> _BenchSettings:
 
 
 class _Vst5842Instrument(Transmitter, Receiver):
-    """Integrated transmitter and receiver backed by one PXIe-5842 VST."""
+    """Integrated transmitter and receiver on one RFIC SCPI server session."""
 
     def __init__(self, settings: _BenchSettings) -> None:
         self._settings = settings
-        self._rfsg: object | None = None
-        self._rfsa: object | None = None
+        self._resource: object | None = None
         self._connected = False
         self._config: DeviceConfig | None = None
         self._waveform: np.ndarray | None = None
         self._transmitting = False
+        self._generation_initiated = False
         self._pretransmit_check: Callable[[float], None] | None = None
 
     def update_settings(self, settings: _BenchSettings) -> None:
@@ -263,19 +395,33 @@ class _Vst5842Instrument(Transmitter, Receiver):
     # -- shared lifecycle -------------------------------------------------
 
     def connect(self, timeout_seconds: float) -> None:
-        _validate_timeout(timeout_seconds)
+        timeout = _validate_timeout(timeout_seconds)
         if self._connected:
             raise RuntimeError("VST instrument is already connected")
-        import nirfsg  # deferred: driver packages are optional dependencies
-        import nirfsa
+        import pyvisa  # deferred: driver packages are optional dependencies
 
-        self._rfsg = nirfsg.Session(self._settings.vst_resource, reset_device=False)
         try:
-            self._rfsa = nirfsa.Session(self._settings.vst_resource, reset_device=False)
-        except Exception:
-            self._rfsg.close()
-            self._rfsg = None
-            raise
+            manager = pyvisa.ResourceManager()
+            resource = manager.open_resource(
+                self._settings.scpi_resource, timeout=int(timeout * 1000)
+            )
+            try:
+                resource.read_termination = "\n"
+                identity = resource.query("*IDN?")
+            except Exception:
+                resource.close()
+                raise
+        except Exception as exc:
+            raise RuntimeError(
+                "RFIC SCPI server is unreachable at "
+                f"{self._settings.scpi_resource!r}; start "
+                "'ni_grpc_device_server.exe server_config.json' first and "
+                "'NIRficScpiServer.exe' second (see docs/real_bench_design.md)"
+            ) from exc
+        if not identity.strip():
+            resource.close()
+            raise RuntimeError("RFIC SCPI server returned an empty *IDN?")
+        self._resource = resource
         self._connected = True
 
     def configure(self, config: DeviceConfig, timeout_seconds: float) -> None:
@@ -286,42 +432,51 @@ class _Vst5842Instrument(Transmitter, Receiver):
         if not isinstance(config, DeviceConfig):
             raise TypeError("config must be a DeviceConfig")
 
-        rfsg = self._rfsg
-        rfsa = self._rfsa
-        import nirfsg
-        import nirfsa
-
-        rfsg.generation_mode = nirfsg.GenerationMode.SCRIPT
-        rfsg.frequency = config.center_frequency_hz
-        rfsg.iq_rate = config.sample_rate_hz
-        rfsg.power_level = (
-            self._settings.reference_power_dbm - config.initial_attenuation_db
+        settings = self._settings
+        self._command("SOURce:RFSG:OUTPut:ENABled 0")
+        # A generation task left running by a previous session (or an aborted
+        # run) refuses GMODe/SELect; abort unconditionally to get a clean
+        # state. Aborting an idle task is a no-op.
+        self._command("ABORt:RFSG")
+        self._command(
+            f'MMEMory:INSTr:LOAD:STATe "{settings.instrument_config_file}",1'
         )
-        rfsg.output_enabled = False
-
-        rfsa.acquisition_type = nirfsa.AcquisitionType.IQ
-        rfsa.center_frequency = config.center_frequency_hz
-        rfsa.iq_rate = config.sample_rate_hz
-        rfsa.reference_level = self._settings.reference_level_dbm
-        rfsa.start_trigger_type = nirfsa.StartTriggerType.NONE
+        self._command(f"SOURce:RFSG:FREQuency {config.center_frequency_hz:.9E}")
+        self._command("SOURce:RFSG:GMODe ARBWAVEFORM")
+        self._command(
+            "SOURce:RFSG:POWer:LEVel "
+            f"{settings.reference_power_dbm - config.initial_attenuation_db:.6f}"
+        )
+        self._command(
+            f"CONFigure:SPECan:FREQuency {config.center_frequency_hz:.9E}"
+        )
+        self._command(
+            f"CONFigure:SPECan:RLEVel {settings.reference_level_dbm:.6f}"
+        )
+        self._command(
+            f"CONFigure:SPECan:EATTenuation {settings.external_attenuation_db:.6f}"
+        )
 
         self._config = config
         self._waveform = None
         self._transmitting = False
+        # Reloading the instrument configuration resets the generator.
+        self._generation_initiated = False
 
     def disconnect(self, timeout_seconds: float) -> None:
         _validate_timeout(timeout_seconds)
         if not self._connected:
             return
-        rfsg, rfsa = self._rfsg, self._rfsa
-        self._rfsg = None
-        self._rfsa = None
+        # Leave the generation task aborted so a later session (or another
+        # station client) can reconfigure the instrument.
+        self._command("ABORt:RFSG")
+        self._generation_initiated = False
+        resource, self._resource = self._resource, None
         self._connected = False
         self._config = None
         self._waveform = None
         self._transmitting = False
-        rfsg.close()
-        rfsa.close()
+        resource.close()
 
     # -- transmitter ------------------------------------------------------
 
@@ -331,8 +486,34 @@ class _Vst5842Instrument(Transmitter, Receiver):
         if self._transmitting:
             raise RuntimeError("cannot upload a waveform while transmission is running")
         data = _copy_waveform(waveform)
-        self._rfsg.write_arb_waveform(_WAVEFORM_NAME, data)
-        self._rfsg.write_script(_CYCLE_SCRIPT)
+
+        settings = self._settings
+        if self._generation_initiated:
+            # The server refuses ARB reselection while the generation task is
+            # running, so abort it; the next start re-initiates.
+            self._command("ABORt:RFSG")
+            self._generation_initiated = False
+        target = Path(settings.waveforms_directory) / _WAVEFORM_FILE_NAME
+        _write_tdms_waveform(target, data, config.sample_rate_hz)
+        name = settings.waveform_name
+        self._command(f'MMEMory:LOAD:WAVeform "{target}", "{name}", 0')
+        # Binding the cached waveform into the RFSG ARB memory is what makes
+        # INITiate:RFSG accept the name; loading into the cache alone is not
+        # enough (verified against the station server, 2026-09-02).
+        self._command(f'SOURce:RFSG:LOAD:WAVeform:MEMory "{name}"')
+        self._command(f'SOURce:RFSG:WAVeform:REPeat:MODE "{name}", CONTINUOUS')
+        self._command(f'SOURce:RFSG:ARB:WAVeform:SELect "{name}"')
+        sample_period = float(
+            self._query(f'MEMory:WAVeform:DX? "{settings.waveform_name}"')
+        )
+        expected_period = 1.0 / config.sample_rate_hz
+        if not math.isclose(
+            sample_period, expected_period, rel_tol=1e-6, abs_tol=1e-15
+        ):
+            raise RuntimeError(
+                "loaded waveform sample period does not match the configured "
+                f"sample rate ({sample_period:.9E} s vs {expected_period:.9E} s)"
+            )
         self._waveform = data
 
     def start_transmission(self, timeout_seconds: float) -> None:
@@ -345,8 +526,10 @@ class _Vst5842Instrument(Transmitter, Receiver):
         if self._pretransmit_check is not None:
             self._pretransmit_check(timeout_seconds)
         self._transmitting = True
-        self._rfsg.output_enabled = True
-        self._rfsg.initiate()
+        if not self._generation_initiated:
+            self._command("INITiate:RFSG")
+            self._generation_initiated = True
+        self._command("SOURce:RFSG:OUTPut:ENABled 1")
 
     def stop_transmission(self, timeout_seconds: float) -> None:
         _validate_timeout(timeout_seconds)
@@ -354,13 +537,15 @@ class _Vst5842Instrument(Transmitter, Receiver):
         if not self._transmitting:
             return
         self._transmitting = False
-        self._rfsg.output_enabled = False
-        self._rfsg.abort()
+        # Keep the generation running unloaded; only the RF output is gated
+        # so a stopped bench can never radiate and a restart is one command.
+        self._command("SOURce:RFSG:OUTPut:ENABled 0")
 
     def get_attenuation_db(self, timeout_seconds: float) -> float:
         _validate_timeout(timeout_seconds)
         self._require_configured()
-        return self._settings.reference_power_dbm - self._rfsg.power_level
+        level = float(self._query("SOURce:RFSG:POWer:LEVel?"))
+        return self._settings.reference_power_dbm - level
 
     def set_attenuation_db(
         self,
@@ -374,7 +559,10 @@ class _Vst5842Instrument(Transmitter, Receiver):
             raise ValueError(
                 "attenuation_db must be within the configured attenuation range"
             )
-        self._rfsg.power_level = self._settings.reference_power_dbm - attenuation
+        self._command(
+            f"SOURce:RFSG:POWer:LEVel "
+            f"{self._settings.reference_power_dbm - attenuation:.6f}"
+        )
 
     # -- receiver ---------------------------------------------------------
 
@@ -383,7 +571,7 @@ class _Vst5842Instrument(Transmitter, Receiver):
         return self._settings.max_capture_samples
 
     def capture(self, request: CaptureRequest, timeout_seconds: float) -> CaptureBatch:
-        _validate_timeout(timeout_seconds)
+        timeout = _validate_timeout(timeout_seconds)
         config, waveform = self._require_transmitting()
         if not isinstance(request, CaptureRequest):
             raise TypeError("request must be a CaptureRequest")
@@ -396,15 +584,25 @@ class _Vst5842Instrument(Transmitter, Receiver):
                 "requested sample count exceeds max_capture_samples "
                 f"({request.sample_count} > {self._settings.max_capture_samples})"
             )
-        import hightime
 
-        rfsa = self._rfsa
-        rfsa.number_of_samples = request.sample_count
-        buffer = np.empty(request.sample_count, dtype=np.complex64)
-        rfsa.read_iq_single_record_into(
-            buffer, timeout=hightime.timedelta(seconds=timeout_seconds)
+        sample_count = request.sample_count
+        acquisition_seconds = (sample_count + _CAPTURE_GUARD_SAMPLES) / (
+            config.sample_rate_hz
         )
-        iq = np.asarray(buffer, dtype=np.complex128)
+        self._command("CONFigure:SPECan:MEASurement:SELect 1,IQ")
+        self._command(f"CONFigure:SPECan:IQ:ACQuisition:TIME {acquisition_seconds:.9E}")
+        self._command(f"CONFigure:SPECan:IQ:SRATe {config.sample_rate_hz:.9E}")
+        self._command("INITiate:SPECan")
+        time.sleep(acquisition_seconds + _CAPTURE_SETTLE_SECONDS)
+
+        iq = self._fetch_iq_trace(timeout)
+        if iq.size < sample_count:
+            raise RuntimeError(
+                "SpecAn IQ trace is shorter than requested "
+                f"({iq.size} < {sample_count} samples); check that the "
+                "transmission is running"
+            )
+        iq = np.ascontiguousarray(iq[:sample_count])
         if not np.all(np.isfinite(iq)):
             raise RuntimeError("captured IQ contains non-finite samples")
         return CaptureBatch(
@@ -416,6 +614,55 @@ class _Vst5842Instrument(Transmitter, Receiver):
         )
 
     # -- helpers ----------------------------------------------------------
+
+    def _command(self, command: str) -> None:
+        """Send one command and fail on the first queued SCPI error."""
+
+        self._resource.write(command)
+        response = self._resource.query("SYSTem:ERRor?")
+        try:
+            code = int(response.split(",", 1)[0])
+        except ValueError as exc:
+            raise RuntimeError(
+                f"malformed SYSTem:ERRor? response {response!r} after {command!r}"
+            ) from exc
+        if code != 0:
+            raise RuntimeError(f"SCPI command {command!r} failed: {response.strip()}")
+
+    def _query(self, command: str) -> str:
+        return self._resource.query(command)
+
+    def _fetch_iq_trace(self, timeout_seconds: float) -> np.ndarray:
+        """Fetch one IQ trace and decode the big-endian float32 block."""
+
+        resource = self._resource
+        resource.timeout = int(timeout_seconds * 1000)
+        resource.write("FETCh:SPECan:RESult:IQ:TRACe:DATA?")
+        # Binary blocks contain 0x0A bytes; read raw with termination off.
+        termination = resource.read_termination
+        resource.read_termination = None
+        try:
+            raw = resource.read_raw()
+        finally:
+            resource.read_termination = termination
+        marker = raw.find(b"#")
+        if marker < 0:
+            raise RuntimeError(
+                f"SpecAn IQ response is not an IEEE block ({raw[:32]!r})"
+            )
+        digits = int(raw[marker + 1 : marker + 2])
+        length = int(raw[marker + 2 : marker + 2 + digits])
+        payload = raw[marker + 2 + digits : marker + 2 + digits + length]
+        values = np.frombuffer(payload, dtype=">f4")
+        usable = 2 * (values.size // 2)
+        if usable == 0:
+            raise RuntimeError(
+                "SpecAn IQ trace is empty; check that the transmission is running"
+            )
+        return (
+            values[:usable:2].astype(np.float64)
+            + 1j * values[1:usable:2].astype(np.float64)
+        )
 
     def _require_connected(self) -> None:
         if not self._connected:
@@ -484,13 +731,16 @@ class _N1912APowerSensor(PowerSensor):
         if self._center_frequency_hz is None:
             raise RuntimeError("power meter is not configured")
         average = self._settings.power_meter_average
-        # Averaged READ? blocks until all averages complete; keep the sensor
-        # sensor-calibration frequency and averaging consistent with the run.
-        read_timeout = max(timeout, average * 0.25 + 5.0)
-        self._resource.timeout = int(read_timeout * 1000)
+        # The N1912A free-runs its averaging in continuous-init mode; READ?
+        # conflicts with it and never completes, so settings are applied, one
+        # averaging cycle is allowed to settle, and the latest finished
+        # average is fetched with FETC1?.
+        self._resource.timeout = int(timeout * 1000)
         self._resource.write(f"SENS1:FREQ {self._center_frequency_hz:.6E}")
         self._resource.write(f"SENS1:AVER:COUN {average}")
-        response = self._resource.query("READ1?")
+        self._resource.write("INIT1:CONT ON")
+        time.sleep(min(average * 0.06 + 1.0, 10.0))
+        response = self._resource.query("FETC1?")
         value = float(response)
         if not math.isfinite(value):
             raise RuntimeError(f"power meter returned a non-finite value {response!r}")

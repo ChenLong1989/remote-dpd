@@ -9,7 +9,7 @@
 当前能力边界：
 
 - 只内置基础 ILC，更新式为 `y_next = y_current - mu * (z_current - x)`。
-- 内置 `simulated` 与真机 `vst5842`（本机 NI RFIC 测试站适配器，需 `real-hardware` 可选依赖与本机 NI 驱动）；其他一体式或分立仪器适配器按需注册。
+- 内置 `simulated` 与真机 `vst5842`（本机 NI RFIC 测试站适配器，经 NI RFIC SCPI 服务器驱动 PXIe-5842 收发，需 `real-hardware` 可选依赖与本机 NI 软件栈）；其他一体式或分立仪器适配器按需注册。
 - 对外常驻入口可选择版本化 inbox/outbox MAT 命令服务或可信网络 Web 控制台；Web 模式同进程保留 MAT watcher。
 - 一次只运行一个非 stop 命令和一个闭环任务；不恢复未完成的硬件会话，不提供多用户或设备并行。
 - 任务完整历史保存为自动清理的临时 artifact；正式 MAT 只保存最终 `x/y/z` 和最终指标。
@@ -27,7 +27,7 @@
 | FastAPI `>=0.135,<1` | 本机 REST/SSE、静态控制台和严格请求边界 |
 | uvicorn `>=0.30,<1` | 默认 loopback、可显式可信 LAN、单 worker 的 Web ASGI 服务 |
 | h5py（可选） | MAT v7.3/HDF5 的有限顶层 dataset 回退 |
-| `real-hardware` 可选组（PyVISA/nirfsg/nirfsa/nitclk） | 真机适配器 `vst5842` 的驱动包；NI 系统驱动由本机软件栈提供 |
+| `real-hardware` 可选组（PyVISA/nptdms） | 真机适配器 `vst5842` 的运行时包（SCPI 会话与 TDMS 波形写出）；NI-VISA 与 NI RFIC 软件栈由本机提供 |
 
 项目不再依赖 PyTorch、MATLAB Engine、MATLAB Runtime 或 MATLAB License。
 
@@ -111,7 +111,7 @@ flowchart LR
 | `web_analysis.py` | 完整周期频谱、measurement-band/ACLR/PAPR、AM/AM/AM/PM 和有界分析缓存 |
 | `web_bridge.py` | Web 命令到共享文件仲裁器的映射、状态/metrics/run DTO 和抽样 |
 | `web.py` / `web_static/` | 可信网络 FastAPI、REST/SSE、安全中间件和原生单页控制台 |
-| `real_bench.py` | 本机真机适配器 `vst5842`：PXIe-5842 发射/接收、N1912A 功率计和 44 V 电源守卫（见 `docs/real_bench_design.md`） |
+| `real_bench.py` | 本机真机适配器 `vst5842`：经 RFIC SCPI 服务器的 PXIe-5842 发射/接收、N1912A 功率计和 44 V 电源守卫（见 `docs/real_bench_design.md`） |
 | `cli.py` | file/web 模式参数、RunStore/FileCommandService/uvicorn 生命周期 |
 | `exceptions.py` | 通用 MAT 错误层次 |
 
