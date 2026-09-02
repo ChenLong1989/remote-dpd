@@ -30,6 +30,7 @@ from .controller import (
 )
 from .power_control import PowerAdjustment
 from .preprocessing import PreprocessingResult
+from .protocol import replace_with_retry
 
 RUN_SCHEMA_VERSION = "1.0"
 DEFAULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -1247,7 +1248,7 @@ def _atomic_write_npy(path: Path, value: np.ndarray) -> None:
             np.save(handle, value, allow_pickle=False)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, path)
+        replace_with_retry(temp_path, path)
         temp_path = None
         _fsync_directory(path.parent)
     finally:
@@ -1284,7 +1285,7 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, path)
+        replace_with_retry(temp_path, path)
         temp_path = None
         _fsync_directory(path.parent)
     finally:

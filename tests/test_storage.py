@@ -3,6 +3,8 @@ import os
 import tempfile
 import time
 import unittest
+
+from platform_guards import FD_ANCHORED_SEMANTICS, SYMLINKS_SUPPORTED
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -266,6 +268,7 @@ class RunStorageTests(unittest.TestCase):
             ("retention",),
         )
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_symlinks_uncontrolled_directories_and_unsafe_ids_are_rejected(self):
         store = RunStore(self.root, retention_seconds=0.0)
         external = self.root / "external"
@@ -292,6 +295,7 @@ class RunStorageTests(unittest.TestCase):
                 store.create_run(self.config, self.x, run_id=unsafe)
         self.assertFalse((self.root / "escape").exists())
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_replaced_runs_root_is_rejected_without_touching_target(self):
         store = RunStore(self.root)
         original_runs = store.runs_root
@@ -307,6 +311,7 @@ class RunStorageTests(unittest.TestCase):
             store.cleanup_expired(now=time.time() + 1000)
         self.assertTrue(marker.exists())
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_iteration_directory_symlink_cannot_escape_run(self):
         store = RunStore(self.root)
         recorder = store.create_run(self.config, self.x, run_id="artifact-symlink")

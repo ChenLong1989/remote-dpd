@@ -27,7 +27,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .file_interface import FileCommandError
 from .result_export import ResultExportError, load_final_payload_file
 from .storage import RunNotFoundError
-from .waveforms import WaveformAccessError, WaveformRepository
+from .waveforms import (
+    DIRECTORY_FDS_SUPPORTED,
+    WaveformAccessError,
+    WaveformRepository,
+    _is_linked_metadata,
+)
 from .web_analysis import WebAnalysisError
 from .web_bridge import WebBridgeError, WebCommandBridge
 
@@ -57,18 +62,27 @@ class WebAPIError(ValueError):
 
 
 class _AnchoredDirectory:
-    """Open regular files relative to one pinned real directory."""
+    """Open regular files relative to one pinned real directory.
+
+    POSIX keeps the original descriptor-anchored implementation. Windows
+    cannot open directory descriptors, so it falls back to a resolved root
+    plus per-component lstat validation (symlinks and reparse points are
+    refused) before each open; see ``waveforms.DIRECTORY_FDS_SUPPORTED``.
+    """
 
     def __init__(self, path: str | Path) -> None:
         raw_path = Path(path)
         if raw_path.is_symlink() or not raw_path.is_dir():
             raise ValueError("result directory must be a real directory")
-        flags = os.O_RDONLY | _required_flag("O_DIRECTORY")
-        flags |= _required_flag("O_NOFOLLOW") | _optional_flag("O_CLOEXEC")
-        self._fd = os.open(raw_path, flags)
-        if not stat.S_ISDIR(os.fstat(self._fd).st_mode):  # pragma: no cover
-            os.close(self._fd)
-            raise ValueError("result directory must be a real directory")
+        self._root = raw_path.resolve(strict=True)
+        self._fd: int | None = None
+        if DIRECTORY_FDS_SUPPORTED:
+            flags = os.O_RDONLY | _required_flag("O_DIRECTORY")
+            flags |= _required_flag("O_NOFOLLOW") | _optional_flag("O_CLOEXEC")
+            self._fd = os.open(raw_path, flags)
+            if not stat.S_ISDIR(os.fstat(self._fd).st_mode):  # pragma: no cover
+                os.close(self._fd)
+                raise ValueError("result directory must be a real directory")
         self._closed = False
 
     def open_file(self, *components: str) -> BinaryIO:
@@ -78,6 +92,8 @@ class _AnchoredDirectory:
             raise ValueError("result path must contain safe path components")
         if self._closed:
             raise RuntimeError("result directory is closed")
+        if self._fd is None:
+            return self._open_file_by_path(components)
         directory_fd = os.dup(self._fd)
         descriptor: int | None = None
         try:
@@ -104,11 +120,31 @@ class _AnchoredDirectory:
         finally:
             os.close(directory_fd)
 
+    def _open_file_by_path(self, components: tuple[str, ...]) -> BinaryIO:
+        current = self._root
+        try:
+            for component in components[:-1]:
+                child = current / component
+                metadata = os.lstat(child)
+                if _is_linked_metadata(metadata) or not stat.S_ISDIR(
+                    metadata.st_mode
+                ):
+                    raise ValueError("result path must contain safe path components")
+                current = child
+            target = current / components[-1]
+            metadata = os.lstat(target)
+            if _is_linked_metadata(metadata) or not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("result must be a regular file")
+            return open(target, "rb")
+        except OSError as exc:
+            raise ValueError("result could not be opened safely") from exc
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        os.close(self._fd)
+        if self._fd is not None:
+            os.close(self._fd)
 
     def __enter__(self) -> _AnchoredDirectory:  # noqa: PYI034 - Python 3.10
         return self

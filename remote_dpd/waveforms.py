@@ -6,7 +6,9 @@ import io
 import math
 import os
 import stat
+import sys
 import warnings
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,6 +20,13 @@ from .safety import check_reference
 DEFAULT_MAX_WAVEFORM_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_WAVEFORM_SAMPLES = 10_000_000
 MAX_PREVIEW_POINTS = 4_096
+
+#: Windows cannot open directory descriptors at all, so the fd-anchored
+#: access model runs on POSIX only. On Windows the repository falls back to
+#: path-based access that re-validates every component with lstat (rejecting
+#: symlinks and any other reparse point) before each open; the check-then-use
+#: window is accepted for the trusted single-user console threat model.
+DIRECTORY_FDS_SUPPORTED = sys.platform != "win32"
 
 
 class WaveformAccessError(ValueError):
@@ -68,15 +77,17 @@ class WaveformRepository:
                 "waveform root must be a real directory",
             )
         self._root = raw_root.resolve(strict=True)
-        flags = os.O_RDONLY | _flag("O_DIRECTORY") | _flag("O_CLOEXEC")
-        flags |= _flag("O_NOFOLLOW")
-        try:
-            self._root_fd = os.open(self._root, flags)
-        except OSError as exc:
-            raise WaveformAccessError(
-                "unsafe_waveform_root",
-                "waveform root cannot be opened safely",
-            ) from exc
+        self._root_fd: int | None = None
+        if DIRECTORY_FDS_SUPPORTED:
+            flags = os.O_RDONLY | _flag("O_DIRECTORY") | _flag("O_CLOEXEC")
+            flags |= _flag("O_NOFOLLOW")
+            try:
+                self._root_fd = os.open(self._root, flags)
+            except OSError as exc:
+                raise WaveformAccessError(
+                    "unsafe_waveform_root",
+                    "waveform root cannot be opened safely",
+                ) from exc
         self._closed = False
 
     @property
@@ -88,7 +99,8 @@ class WaveformRepository:
         if self._closed:
             return
         self._closed = True
-        os.close(self._root_fd)
+        if self._root_fd is not None:
+            os.close(self._root_fd)
 
     def list_directory(
         self,
@@ -99,45 +111,59 @@ class WaveformRepository:
         """List safe direct children without following symbolic links."""
         normalized_limit = _bounded_integer(limit, "limit", minimum=1, maximum=500)
         components = _relative_components(relative_directory, allow_empty=True)
-        directory_fd = self._open_directory(components)
-        try:
-            parent = "/".join(components)
-            entries: list[WaveformEntry] = []
-            with os.scandir(directory_fd) as iterator:
-                for entry in iterator:
-                    if entry.name.startswith(".") or entry.is_symlink():
-                        continue
-                    try:
-                        metadata = entry.stat(follow_symlinks=False)
-                    except OSError:
-                        continue
-                    relative = entry.name if not parent else f"{parent}/{entry.name}"
-                    if stat.S_ISDIR(metadata.st_mode):
-                        entries.append(
-                            WaveformEntry(
-                                relative,
-                                entry.name,
-                                "directory",
-                                None,
-                                metadata.st_mtime_ns,
-                            )
-                        )
-                    elif stat.S_ISREG(metadata.st_mode) and entry.name.lower().endswith(
-                        ".mat"
-                    ):
-                        entries.append(
-                            WaveformEntry(
-                                relative,
-                                entry.name,
-                                "waveform",
-                                metadata.st_size,
-                                metadata.st_mtime_ns,
-                            )
-                        )
-            entries.sort(key=lambda item: (item.kind != "directory", item.name.lower()))
-            return tuple(entries[:normalized_limit])
-        finally:
-            os.close(directory_fd)
+        parent = "/".join(components)
+        if DIRECTORY_FDS_SUPPORTED:
+            directory_fd = self._open_directory(components)
+            try:
+                with os.scandir(directory_fd) as iterator:
+                    return self._collect_entries(iterator, parent, normalized_limit)
+            finally:
+                os.close(directory_fd)
+        directory = self._anchored_directory_path(components)
+        with os.scandir(directory) as iterator:
+            return self._collect_entries(iterator, parent, normalized_limit)
+
+    def _collect_entries(
+        self,
+        iterator: Iterator[os.DirEntry],
+        parent: str,
+        limit: int,
+    ) -> tuple[WaveformEntry, ...]:
+        entries: list[WaveformEntry] = []
+        for entry in iterator:
+            if entry.name.startswith(".") or entry.is_symlink():
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if _is_linked_metadata(metadata):
+                continue
+            relative = entry.name if not parent else f"{parent}/{entry.name}"
+            if stat.S_ISDIR(metadata.st_mode):
+                entries.append(
+                    WaveformEntry(
+                        relative,
+                        entry.name,
+                        "directory",
+                        None,
+                        metadata.st_mtime_ns,
+                    )
+                )
+            elif stat.S_ISREG(metadata.st_mode) and entry.name.lower().endswith(
+                ".mat"
+            ):
+                entries.append(
+                    WaveformEntry(
+                        relative,
+                        entry.name,
+                        "waveform",
+                        metadata.st_size,
+                        metadata.st_mtime_ns,
+                    )
+                )
+        entries.sort(key=lambda item: (item.kind != "directory", item.name.lower()))
+        return tuple(entries[:limit])
 
     def load_x(self, relative_path: str) -> np.ndarray:
         """Open, read, and validate x from one anchored regular MAT file."""
@@ -147,46 +173,10 @@ class WaveformRepository:
                 "invalid_waveform_path",
                 "waveform file must use the .mat extension",
             )
-        parent_fd = self._open_directory(components[:-1])
-        file_fd: int | None = None
-        try:
-            flags = os.O_RDONLY | _flag("O_CLOEXEC") | _flag("O_NOFOLLOW")
-            flags |= _flag("O_NONBLOCK")
-            try:
-                file_fd = os.open(components[-1], flags, dir_fd=parent_fd)
-            except FileNotFoundError as exc:
-                raise WaveformAccessError(
-                    "waveform_not_found",
-                    "waveform file was not found",
-                ) from exc
-            except OSError as exc:
-                raise WaveformAccessError(
-                    "unsafe_waveform_path",
-                    "waveform file cannot be opened safely",
-                ) from exc
-            metadata = os.fstat(file_fd)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise WaveformAccessError(
-                    "unsafe_waveform_path",
-                    "waveform path must identify a regular file",
-                )
-            if metadata.st_size > self._max_bytes:
-                raise WaveformAccessError(
-                    "waveform_too_large",
-                    f"waveform file exceeds {self._max_bytes} bytes",
-                )
-            with os.fdopen(file_fd, "rb", closefd=True) as handle:
-                file_fd = None
-                payload = handle.read(self._max_bytes + 1)
-            if len(payload) > self._max_bytes:
-                raise WaveformAccessError(
-                    "waveform_too_large",
-                    f"waveform file exceeds {self._max_bytes} bytes",
-                )
-        finally:
-            if file_fd is not None:
-                os.close(file_fd)
-            os.close(parent_fd)
+        if DIRECTORY_FDS_SUPPORTED:
+            payload = self._read_file_bytes_posix(components)
+        else:
+            payload = self._read_file_bytes_windows(components)
 
         raw_x = _load_x_from_mat_bytes(payload, max_samples=self._max_samples)
         array = np.asarray(raw_x)
@@ -256,8 +246,146 @@ class WaveformRepository:
             "safety": report.to_dict(),
         }
 
+    def _read_file_bytes_posix(self, components: tuple[str, ...]) -> bytes:
+        parent_fd = self._open_directory(components[:-1])
+        file_fd: int | None = None
+        try:
+            flags = os.O_RDONLY | _flag("O_CLOEXEC") | _flag("O_NOFOLLOW")
+            flags |= _flag("O_NONBLOCK")
+            try:
+                file_fd = os.open(components[-1], flags, dir_fd=parent_fd)
+            except FileNotFoundError as exc:
+                raise WaveformAccessError(
+                    "waveform_not_found",
+                    "waveform file was not found",
+                ) from exc
+            except OSError as exc:
+                raise WaveformAccessError(
+                    "unsafe_waveform_path",
+                    "waveform file cannot be opened safely",
+                ) from exc
+            metadata = os.fstat(file_fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise WaveformAccessError(
+                    "unsafe_waveform_path",
+                    "waveform path must identify a regular file",
+                )
+            if metadata.st_size > self._max_bytes:
+                raise WaveformAccessError(
+                    "waveform_too_large",
+                    f"waveform file exceeds {self._max_bytes} bytes",
+                )
+            with os.fdopen(file_fd, "rb", closefd=True) as handle:
+                file_fd = None
+                payload = handle.read(self._max_bytes + 1)
+            if len(payload) > self._max_bytes:
+                raise WaveformAccessError(
+                    "waveform_too_large",
+                    f"waveform file exceeds {self._max_bytes} bytes",
+                )
+            return payload
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
+
+    def _read_file_bytes_windows(self, components: tuple[str, ...]) -> bytes:
+        directory = self._anchored_directory_path(components[:-1])
+        target = directory / components[-1]
+        try:
+            metadata = os.lstat(target)
+        except FileNotFoundError as exc:
+            raise WaveformAccessError(
+                "waveform_not_found",
+                "waveform file was not found",
+            ) from exc
+        except OSError as exc:
+            raise WaveformAccessError(
+                "unsafe_waveform_path",
+                "waveform file cannot be opened safely",
+            ) from exc
+        _reject_linked_metadata(metadata)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise WaveformAccessError(
+                "unsafe_waveform_path",
+                "waveform path must identify a regular file",
+            )
+        if metadata.st_size > self._max_bytes:
+            raise WaveformAccessError(
+                "waveform_too_large",
+                f"waveform file exceeds {self._max_bytes} bytes",
+            )
+        file_fd: int | None = None
+        try:
+            file_fd = os.open(target, os.O_RDONLY | _flag("O_BINARY"))
+            opened = os.fstat(file_fd)
+            if not stat.S_ISREG(opened.st_mode):
+                raise WaveformAccessError(
+                    "unsafe_waveform_path",
+                    "waveform path must identify a regular file",
+                )
+            if opened.st_size > self._max_bytes:
+                raise WaveformAccessError(
+                    "waveform_too_large",
+                    f"waveform file exceeds {self._max_bytes} bytes",
+                )
+            with os.fdopen(file_fd, "rb", closefd=True) as handle:
+                file_fd = None
+                payload = handle.read(self._max_bytes + 1)
+            if len(payload) > self._max_bytes:
+                raise WaveformAccessError(
+                    "waveform_too_large",
+                    f"waveform file exceeds {self._max_bytes} bytes",
+                )
+            return payload
+        except WaveformAccessError:
+            raise
+        except OSError as exc:
+            raise WaveformAccessError(
+                "unsafe_waveform_path",
+                "waveform file cannot be opened safely",
+            ) from exc
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+
+    def _anchored_directory_path(self, components: tuple[str, ...]) -> Path:
+        """Resolve components under the pinned root, rejecting linked paths.
+
+        Windows fallback for the fd-anchored POSIX model: every component is
+        re-validated with lstat (symlinks and any reparse point are refused)
+        before the resulting path is handed to the caller.
+        """
+
+        self._require_open()
+        current = self._root
+        try:
+            for component in components:
+                child = current / component
+                try:
+                    metadata = os.lstat(child)
+                except FileNotFoundError as exc:
+                    raise WaveformAccessError(
+                        "waveform_not_found",
+                        "waveform directory was not found",
+                    ) from exc
+                _reject_linked_metadata(metadata)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise WaveformAccessError(
+                        "unsafe_waveform_path",
+                        "waveform path must identify a directory",
+                    )
+                current = child
+            return current
+        except OSError as exc:
+            raise WaveformAccessError(
+                "unsafe_waveform_path",
+                "waveform directory cannot be opened safely",
+            ) from exc
+
     def _open_directory(self, components: tuple[str, ...]) -> int:
         self._require_open()
+        assert self._root_fd is not None  # POSIX-only call site
         current_fd = os.dup(self._root_fd)
         try:
             flags = os.O_RDONLY | _flag("O_DIRECTORY") | _flag("O_CLOEXEC")
@@ -550,6 +678,22 @@ def _bounded_integer(value: object, name: str, *, minimum: int, maximum: int) ->
 
 def _flag(name: str) -> int:
     return int(getattr(os, name, 0))
+
+
+def _is_linked_metadata(metadata: os.stat_result) -> bool:
+    """True when the lstat metadata describes a symlink or reparse point."""
+
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_reparse_tag", 0)
+    )
+
+
+def _reject_linked_metadata(metadata: os.stat_result) -> None:
+    if _is_linked_metadata(metadata):
+        raise WaveformAccessError(
+            "unsafe_waveform_path",
+            "waveform path must not contain symbolic links or reparse points",
+        )
 
 
 __all__ = [

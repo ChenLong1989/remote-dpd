@@ -4,6 +4,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+from platform_guards import FD_ANCHORED_SEMANTICS, SYMLINKS_SUPPORTED
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1722,6 +1724,7 @@ class FileCommandServiceTests(unittest.TestCase):
         self.assertTrue(valid.accepted)
         self.assertEqual(valid.state, "loaded")
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_path_and_filename_validation_prevent_traversal(self):
         outside = self.root / "command_outside.mat"
         savemat(

@@ -4,6 +4,8 @@ import os
 import tempfile
 import time
 import unittest
+
+from platform_guards import FD_ANCHORED_SEMANTICS, SYMLINKS_SUPPORTED
 import warnings
 from functools import partial
 from pathlib import Path
@@ -218,6 +220,7 @@ class WebDownloadSecurityRegressionTests(unittest.TestCase):
 
         self.assertEqual(self.app.state.console.sse_clients, 0)
 
+    @unittest.skipUnless(FD_ANCHORED_SEMANTICS, "replacing a file kept open by another handle is POSIX fd semantics")
     def test_command_and_run_downloads_keep_the_validated_descriptor(self) -> None:
         cases = (
             (

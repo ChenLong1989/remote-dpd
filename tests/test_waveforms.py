@@ -1,6 +1,8 @@
 import os
 import tempfile
 import unittest
+
+from platform_guards import FD_ANCHORED_SEMANTICS, SYMLINKS_SUPPORTED
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +35,7 @@ class WaveformRepositoryTests(unittest.TestCase):
         self.repository.close()
         self.temporary.cleanup()
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_lists_only_real_directories_and_mat_files(self):
         nested = self.root / "nested"
         nested.mkdir()
@@ -73,6 +76,7 @@ class WaveformRepositoryTests(unittest.TestCase):
         self.assertEqual(len(preview["magnitude"]), 64)
         self.assertTrue(preview["safety"]["passed"])
 
+    @unittest.skipUnless(SYMLINKS_SUPPORTED, "creating symlinks requires privileges on this host")
     def test_rejects_traversal_absolute_non_normalized_and_symlink_paths(self):
         outside = Path(self.temporary.name) / "outside.mat"
         savemat(outside, {"x": _reference()})
@@ -94,6 +98,7 @@ class WaveformRepositoryTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(WaveformAccessError):
                 self.repository.load_x(path)
 
+    @unittest.skipUnless(FD_ANCHORED_SEMANTICS, "path-based fallback intentionally follows a replaced root path")
     def test_root_descriptor_does_not_follow_a_replaced_root_path(self):
         savemat(self.root / "original.mat", {"x": _reference()})
         original_root = self.root.with_name("original-root")
