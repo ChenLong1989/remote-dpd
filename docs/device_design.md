@@ -88,6 +88,8 @@ classDiagram
 
 `RFBench` 负责所有底层仪器只连接或释放一次，并提供统一 `safe_shutdown()`。接口允许 `transmitter`、`receiver` 和 `power_sensor` 返回同一个一体式对象，也允许返回三个独立对象。所有可能阻塞的方法都显式接收 `timeout_seconds`；`max_capture_samples` 和参数 schema 必须是适配器缓存的本地能力信息，不得在 property 读取中执行无界硬件 I/O。
 
+可选契约方法 `RFBench.quick_start_configuration() -> dict | None`（默认 `None`）返回适配器自带的一键闭环推荐配置：结构同 Web `default_configuration`（`device_config` 含公共字段与经 schema 校验的 `device_options`，另含 `normalize_reference_rms`、`reference_target_rms_dbfs`、`runtime_name`、`runtime_config`、`max_iterations`）。Web `/api/v1/devices` 消费该方法生成每设备默认配置，结构校验失败或未提供时回退通用 `DeviceConfig()` 默认。方法必须为纯本地数据（不得执行硬件 I/O）；`SimulatedRFBench` 与 `Vst5842RFBench` 各自提供 profile，见 `docs/simulation_design.md` 与 `docs/real_bench_design.md`。
+
 ## 5. 当前边界
 
 设备注册表通过 `register_rf_bench()`、`create_rf_bench()` 和 `list_rf_benches()` 按规范化名称管理无参数 factory。每次创建返回独立 `RFBench`；factory 返回错误类型时立即拒绝。内置注册名为 `simulated`（延迟导入避免设备抽象反向依赖具体仿真实现）和 `vst5842`（`remote_dpd/real_bench.py`，本机真机适配器，同样延迟导入驱动包，详见 `docs/real_bench_design.md`）。

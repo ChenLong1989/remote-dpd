@@ -200,7 +200,7 @@ PA 输出功率，因此 `target_power_dbm` / `safety_power_limit_dbm` 均以 N1
 | `power_meter_average` | integer | `64` | 功率计平均次数 |
 | `supply_resource` | string | `GPIB1::5::INSTR` | N5767A VISA 地址 |
 | `aux_supply_resources` | string array | `["GPIB1::7::INSTR","GPIB1::8::INSTR"]` | 只读联锁校验的偏置电源 |
-| `enable_supply_shutdown` | boolean | `true` | 安全收尾时关闭 44 V |
+| `enable_supply_shutdown` | boolean | `false` | 安全收尾时关闭 44 V（默认保持人工管理） |
 | `enable_supply_interlock` | boolean | `true` | 发射前只读校验偏置在位 |
 | `max_capture_samples` | integer | `64_000_000` | 单次抓取样点上限 |
 
@@ -208,6 +208,29 @@ PA 输出功率，因此 `target_power_dbm` / `safety_power_limit_dbm` 均以 N1
 （1.84 GHz / 491.52 MS/s、`average_segment_count=16`、`target_power_dbm=38.0`、
 `safety_power_limit_dbm=39.0`、衰减 `0/40 dB` 初始 `20 dB`、`settle_seconds=0.5`），
 供冒烟脚本与文档引用；运行配置仍由命令显式提供。
+
+schema 默认 `enable_supply_shutdown` 为 `false`（2026-09-02 用户决策）：站点红线是
+"44 V 漏极电源由操作员人工管理、PA 上电/下电均为人工动作"，默认 `false` 保证 run
+终态只关 TX/RF，未显式配置的入口（文件命令等）也不会意外切断操作员人工开启的
+44 V；需要自动关断的场景显式配置 `true`。GaN PA 静态偏置（约 0.35 A）长期在位是
+站点常态，无硬件风险。
+
+适配器覆写 `quick_start_configuration()`（契约见 `docs/device_design.md`），提供
+Web 一键真机默认配置（冒烟验证参数 + 用户决策工作点）：
+
+| 项 | 值 | 依据 |
+| --- | --- | --- |
+| 中心频率 / 采样率 | 1.84 GHz / 491.52 MS/s | 站点工作点基准 |
+| target / safety 功率 | 38.0 / 39.0 dBm | 用户决策（工作点） |
+| 初始衰减 / 范围 | 22.0 dB / 0–40 dB | 冒烟值（从低功率爬升） |
+| settle / call timeout | 0.5 s / 90 s | 冒烟值（SCPI 序列需要） |
+| 平均段数 / 迭代 / mu | 8 段 / 3 轮 / 0.1 | 用户决策（冒烟验证值） |
+| `enable_supply_shutdown` | false | 用户决策（44 V 纯人工） |
+| `power_meter_average` | 8 | 冒烟值（64 次平均拖慢调谐） |
+| RMS 归一化 | true / -15 dBFS | 与冒烟一致（全局默认） |
+
+每轮迭代约 1 分钟（8 段 × 2–4 s 采集 + settle + 功率计平均），3 轮一键闭环
+含调谐约 4–6 分钟；Web 一键提交前的确认弹窗见 `docs/web_console_design.md` §10。
 
 ## 6. 参考波形（临时过渡方案）
 
@@ -252,6 +275,27 @@ real-hardware = [
 NI-VISA、NI RFIC Test Software（含 SCPI 服务器与 gRPC 设备服务器）由本机 NI 软件栈
 提供（已确认安装），不从 PyPI 分发。本机部署使用独立 venv（Python 3.13）+
 `pip install -e .[real-hardware]`；`cli.py` 无需改动——模块注册不依赖驱动安装。
+
+Web 模式部署前置步骤（本机 Windows 已验证可完整运行，含 simulated 一键闭环与
+结果下载）：
+
+1. 本机全局 Python 缺 `fastapi`/`uvicorn`/`watchdog`，Web 必须用 venv：
+   `python -m venv .venv && .venv\Scripts\pip install -e .[real-hardware]`。
+2. 波形就位：将 NR100 测试波形（`nr_tm11.mat`，NR_DL TM1.1 0.5 ms slot @491.52 MS/s，
+   245,760 样点；由 `scripts/convert_tdms_to_mat.py` 生成）复制到 Web
+   `--waveform-root` 目录（如 `<exchange-root>/waveforms/nr_tm11.mat`）。该文件不入
+   git；缺失时用转换脚本从本机 TDMS 重新生成。
+3. 服务启动顺序（开机后如未自启）：先
+   `ni_grpc_device_server.exe server_config.json`（监听 31763），再
+   `NIRficScpiServer.exe`（PowerShell Start-Process 独立进程）；SCPI 资源
+   `TCPIP0::127.0.0.1::inst0::INSTR` 可达后 Web `connect` 才能成功（不可达时报错
+   文案已含启动顺序指引）。
+4. Web 启动：`remote-dpd --exchange-root <root> --mode web --waveform-root <root>\waveforms
+   --web-port 8000`（本机访问默认 127.0.0.1；可信 LAN 需 `--web-host 0.0.0.0
+   --web-allowed-host <私网 IP>`）。
+5. 联调窗口约束：关闭 InstrumentStudio；桌面常驻脚本（pmGUI/SinglePS/pa.py）竞争
+   功率计 LAN 与 GPIB，读数异常时先排查；IS 与 SCPI 服务器可共存但 IS 打开时勿发
+   SCPI 测量命令。
 
 ## 8. 验证方式与 2026-09-02 真机冒烟结果
 
