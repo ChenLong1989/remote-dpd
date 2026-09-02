@@ -24,6 +24,7 @@ from .device import (
     DeviceConfig,
     DeviceParameterSchema,
     DeviceRegistrationError,
+    RFBench,
     create_rf_bench,
     list_rf_benches,
 )
@@ -71,10 +72,6 @@ _RUN_DETAIL_ITERATION_LIMIT = 1_000
 _RUN_DETAIL_CONFIG_MAX_NODES = 4_096
 _RUN_DETAIL_SNAPSHOT_MAX_NODES = 2_048
 _RUN_DETAIL_EVENTS_MAX_NODES = 10_000
-_SIMULATED_WEB_SAMPLE_RATE_HZ = 491.52e6
-_SIMULATED_WEB_MAX_CAPTURE_SAMPLES = 10_000_000
-_SIMULATED_WEB_MAX_ITERATIONS = 15
-_SIMULATED_WEB_ILC_MU = 0.35
 
 
 class WebBridgeError(ValueError):
@@ -253,6 +250,7 @@ class WebCommandBridge:
                     "schema": schema.to_dict(),
                     "default_configuration": _web_default_configuration(
                         device_type,
+                        bench,
                         schema,
                     ),
                 }
@@ -577,25 +575,91 @@ class WebCommandBridge:
 
 def _web_default_configuration(
     device_type: str,
+    bench: RFBench,
     schema: DeviceParameterSchema,
 ) -> dict[str, Any]:
-    common = DeviceConfig().to_dict()
-    max_iterations = 10
-    ilc_mu = 0.5
-    if device_type == "simulated":
-        common["sample_rate_hz"] = _SIMULATED_WEB_SAMPLE_RATE_HZ
-        common["device_options"] = schema.validate_options(
-            {"max_capture_samples": _SIMULATED_WEB_MAX_CAPTURE_SAMPLES}
-        )
-        max_iterations = _SIMULATED_WEB_MAX_ITERATIONS
-        ilc_mu = _SIMULATED_WEB_ILC_MU
+    """Build the per-device Web quick-start defaults.
+
+    Adapters ship their recommendation through
+    ``RFBench.quick_start_configuration()``; anything structurally invalid
+    falls back to the generic common defaults instead of failing /devices.
+    """
+
+    profile = _validated_quick_start_profile(device_type, bench, schema)
+    if profile is not None:
+        return profile
     return {
         "device_type": device_type,
-        "device_config": common,
+        "device_config": DeviceConfig().to_dict(),
         "normalize_reference_rms": DEFAULT_NORMALIZE_REFERENCE_RMS,
         "reference_target_rms_dbfs": DEFAULT_REFERENCE_TARGET_RMS_DBFS,
         "runtime_name": "basic_ilc",
-        "runtime_config": {"mu": ilc_mu},
+        "runtime_config": {"mu": 0.5},
+        "max_iterations": 10,
+    }
+
+
+def _validated_quick_start_profile(
+    device_type: str,
+    bench: RFBench,
+    schema: DeviceParameterSchema,
+) -> dict[str, Any] | None:
+    try:
+        profile = bench.quick_start_configuration()
+        if not isinstance(profile, Mapping):
+            raise TypeError("quick-start profile must be a mapping")
+        if profile.get("device_type") != device_type:
+            raise ValueError("quick-start profile device_type does not match")
+        raw_device_config = profile.get("device_config")
+        if not isinstance(raw_device_config, Mapping):
+            raise TypeError("quick-start device_config must be a mapping")
+        common = DeviceConfig().to_dict()
+        overrides = {
+            key: value
+            for key, value in raw_device_config.items()
+            if key != "device_options" and key in common
+        }
+        merged = dict(common)
+        merged.update(overrides)
+        merged["device_options"] = schema.validate_options(
+            raw_device_config.get("device_options") or {}
+        )
+        effective_config = DeviceConfig(**merged)
+        normalize = profile.get(
+            "normalize_reference_rms", DEFAULT_NORMALIZE_REFERENCE_RMS
+        )
+        reference_target = profile.get(
+            "reference_target_rms_dbfs", DEFAULT_REFERENCE_TARGET_RMS_DBFS
+        )
+        runtime_name = profile.get("runtime_name", "basic_ilc")
+        runtime_config = profile.get("runtime_config") or {"mu": 0.5}
+        max_iterations = profile.get("max_iterations", 10)
+        if not isinstance(normalize, (bool, np.bool_)):
+            raise TypeError("normalize_reference_rms must be a boolean")
+        if not isinstance(reference_target, (int, float)) or isinstance(
+            reference_target, bool
+        ):
+            raise TypeError("reference_target_rms_dbfs must be a number")
+        if not isinstance(runtime_name, str) or not runtime_name:
+            raise TypeError("runtime_name must be a non-empty string")
+        if not isinstance(runtime_config, Mapping):
+            raise TypeError("runtime_config must be a mapping")
+        if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):
+            raise TypeError("max_iterations must be an integer")
+    except Exception:
+        _LOG.warning(
+            "ignoring invalid quick-start profile for %r",
+            device_type,
+            exc_info=True,
+        )
+        return None
+    return {
+        "device_type": device_type,
+        "device_config": effective_config.to_dict(),
+        "normalize_reference_rms": bool(normalize),
+        "reference_target_rms_dbfs": float(reference_target),
+        "runtime_name": runtime_name,
+        "runtime_config": dict(runtime_config),
         "max_iterations": max_iterations,
     }
 

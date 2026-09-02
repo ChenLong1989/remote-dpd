@@ -189,8 +189,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-5")
-        script = self.client.get("/static/app.js?v=single-screen-5")
+        styles = self.client.get("/static/styles.css?v=single-screen-6")
+        script = self.client.get("/static/app.js?v=single-screen-6")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -205,13 +205,21 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="configuration-dialog"', page.text)
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
-        self.assertIn("single-screen-5", page.text)
+        self.assertIn('id="run-confirm-dialog"', page.text)
+        self.assertIn("single-screen-6", page.text)
         self.assertIn('value="target_error" checked', page.text)
         self.assertIn('data-aux-view="aclr"', page.text)
         self.assertIn('id="normalize-reference-rms"', page.text)
         self.assertIn('id="reference-target-rms"', page.text)
         self.assertEqual(health.json()["status"], "ok")
-        simulated = devices.json()["devices"][0]
+        device_types = [entry["device_type"] for entry in devices.json()["devices"]]
+        self.assertIn("simulated", device_types)
+        self.assertIn("vst5842", device_types)
+        simulated = next(
+            entry
+            for entry in devices.json()["devices"]
+            if entry["device_type"] == "simulated"
+        )
         self.assertEqual(simulated["device_type"], "simulated")
         self.assertEqual(simulated["schema"]["schema_version"], 3)
         default_configuration = simulated["default_configuration"]

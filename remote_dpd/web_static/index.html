@@ -8,7 +8,7 @@
       content="Single-screen RF workbench for iterative digital predistortion control and analysis."
     />
     <title>Remote DPD RF Workbench</title>
-    <link rel="stylesheet" href="/static/styles.css?v=single-screen-5" />
+    <link rel="stylesheet" href="/static/styles.css?v=single-screen-6" />
   </head>
   <body>
     <header class="instrument-header">
@@ -86,10 +86,10 @@
           </section>
 
           <section class="instrument-window control-window">
-            <div class="window-titlebar compact"><div><span class="window-index">3</span><div><small>DEFAULT WORKFLOW</small><h2>Simulation Control</h2></div></div><strong class="bench-readout" id="bench-readout">—</strong></div>
+            <div class="window-titlebar compact"><div><span class="window-index">3</span><div><small>DEFAULT WORKFLOW</small><h2>Closed-Loop Control</h2></div></div><strong class="bench-readout" id="bench-readout">—</strong></div>
             <div class="workflow-state">
               <small id="next-action-label">LOADING DEFAULT BENCH</small>
-              <strong id="workflow-status">Preparing waveform and simulated RF bench…</strong>
+              <strong id="workflow-status">Preparing waveform and RF bench…</strong>
               <p id="next-action-detail">The default run will load, configure, tune, calibrate, iterate, and stop safely.</p>
             </div>
             <button class="primary-action" id="action-run" type="button" disabled>Loading Default Bench</button>
@@ -121,14 +121,14 @@
 
     <dialog class="instrument-dialog configuration-dialog" id="configuration-dialog">
       <div class="dialog-titlebar">
-        <div><small>INSTRUMENT SETUP</small><h2>Simulation Configuration</h2></div>
+        <div><small>INSTRUMENT SETUP</small><h2>Closed-Loop Configuration</h2></div>
         <div><button class="dialog-abort" data-dialog-abort type="button">RF OFF / ABORT</button><button class="dialog-close" data-dialog-close="configuration-dialog" type="button">×</button></div>
       </div>
       <div class="dialog-tabs" role="tablist">
         <button class="dialog-tab active" data-config-tab="signal" type="button">Signal</button>
         <button class="dialog-tab" data-config-tab="power" type="button">Power & Safety</button>
         <button class="dialog-tab" data-config-tab="analysis" type="button">Analysis Bands</button>
-        <button class="dialog-tab" data-config-tab="dut" type="button">Simulation DUT</button>
+        <button class="dialog-tab" data-config-tab="dut" type="button">Bench / DUT</button>
       </div>
       <div class="dialog-content">
         <section class="config-panel active" data-config-panel="signal">
@@ -177,7 +177,7 @@
         </section>
 
         <section class="config-panel" data-config-panel="dut">
-          <div class="section-heading"><span>04</span><div><small>SIMULATION DUT</small><h3>PA Model & Impairments</h3></div><strong id="device-schema-label">SCHEMA</strong></div>
+          <div class="section-heading"><span>04</span><div><small id="dut-section-eyebrow">SIMULATION DUT</small><h3 id="dut-section-title">PA Model &amp; Impairments</h3></div><strong id="device-schema-label">SCHEMA</strong></div>
           <div id="device-option-fields"></div>
           <div class="bounded-table-pane coefficient-pane">
             <div class="coefficient-table" id="coefficient-table" role="table" aria-label="Memory polynomial coefficients">
@@ -193,7 +193,28 @@
         <span></span>
         <button class="secondary-action" data-dialog-close="configuration-dialog" type="button">Cancel</button>
         <button class="secondary-action" id="config-apply" type="button">Apply Draft</button>
-        <button class="primary-action compact" id="config-run" type="button">Start Simulation</button>
+        <button class="primary-action compact" id="config-run" type="button">Start Run</button>
+      </div>
+    </dialog>
+
+    <dialog class="instrument-dialog confirm-dialog" id="run-confirm-dialog">
+      <div class="dialog-titlebar">
+        <div><small>RF SAFETY CONFIRMATION</small><h2>Start Real Bench Run</h2></div>
+        <div><button class="dialog-close" data-dialog-close="run-confirm-dialog" type="button">×</button></div>
+      </div>
+      <div class="confirm-body">
+        <p class="confirm-warning">
+          A physical RF bench is selected. Confirming this dialog starts RF transmission and
+          ramps the PA toward the target power below. Verify the bench state, cabling and drain
+          supply before you continue.
+        </p>
+        <div class="confirm-summary" id="run-confirm-summary"></div>
+      </div>
+      <div class="dialog-footer">
+        <span></span>
+        <span></span>
+        <button class="secondary-action" data-dialog-close="run-confirm-dialog" type="button">Cancel</button>
+        <button class="primary-action compact confirm-accept" id="run-confirm-accept" type="button">Confirm &amp; Run</button>
       </div>
     </dialog>
 
@@ -240,6 +261,6 @@
       <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
     </dialog>
 
-    <script src="/static/app.js?v=single-screen-5" defer></script>
+    <script src="/static/app.js?v=single-screen-6" defer></script>
   </body>
 </html>

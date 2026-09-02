@@ -15,6 +15,8 @@ from remote_dpd.device import (
     Receiver,
     RFBench,
     Transmitter,
+    create_rf_bench,
+    list_rf_benches,
 )
 from remote_dpd.preprocessing import CaptureBatch
 
@@ -407,6 +409,29 @@ class DeviceCapabilityTests(unittest.TestCase):
         for method in methods:
             with self.subTest(method=method.__qualname__):
                 self.assertIn("timeout_seconds", inspect.signature(method).parameters)
+
+
+class QuickStartContractTests(unittest.TestCase):
+    def test_default_quick_start_is_none_without_hardware_io(self):
+        import sys
+
+        bench = _IntegratedBench()
+        self.assertIsNone(bench.quick_start_configuration())
+        bench = create_rf_bench("vst5842")
+        profile = bench.quick_start_configuration()
+        self.assertIsInstance(profile, dict)
+        # Building a bench and reading its quick-start profile must never
+        # pull optional driver packages into the process.
+        self.assertNotIn("pyvisa", sys.modules)
+        self.assertNotIn("nptdms", sys.modules)
+
+    def test_builtin_registry_lists_simulated_and_vst5842(self):
+        registered = list_rf_benches()
+        self.assertIn("simulated", registered)
+        self.assertIn("vst5842", registered)
+        for name in ("simulated", "vst5842"):
+            with self.subTest(device=name):
+                self.assertIsInstance(create_rf_bench(name), RFBench)
 
 
 if __name__ == "__main__":

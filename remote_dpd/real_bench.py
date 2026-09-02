@@ -53,7 +53,6 @@ from .device import (
     Receiver,
     RFBench,
     Transmitter,
-    register_rf_bench,
 )
 from .preprocessing import CaptureBatch
 
@@ -189,8 +188,12 @@ VST5842_DEVICE_SCHEMA = DeviceParameterSchema(
         DeviceParameterField(
             name="enable_supply_shutdown",
             value_type=DeviceParameterType.BOOLEAN,
-            default=True,
-            description="Turn the 44 V drain output off during safe shutdown.",
+            default=False,
+            description=(
+                "Turn the 44 V drain output off during safe shutdown. Defaults "
+                "to false: the drain supply is opened and closed manually by "
+                "the operator, so runs only stop RF unless this is enabled."
+            ),
         ),
         DeviceParameterField(
             name="enable_supply_interlock",
@@ -928,9 +931,36 @@ class Vst5842RFBench(RFBench):
         self._connected = False
         self._config = None
 
+    def quick_start_configuration(self) -> dict[str, object]:
+        """One-click Web profile for the station's verified operating point.
 
-def _create_vst5842_bench() -> RFBench:
-    return Vst5842RFBench()
+        Values follow the 2026-09-02 closed-loop smoke plus the operator's
+        confirmed decisions: target power at the +38 dBm working point, three
+        ILC iterations of eight averaged segments at mu 0.1, and the 44 V
+        drain supply left under manual operator control.
+        """
 
-
-register_rf_bench("vst5842", _create_vst5842_bench)
+        return {
+            "device_type": "vst5842",
+            "device_config": {
+                "center_frequency_hz": 1.84e9,
+                "sample_rate_hz": 491.52e6,
+                "average_segment_count": 8,
+                "target_power_dbm": 38.0,
+                "safety_power_limit_dbm": 39.0,
+                "initial_attenuation_db": 22.0,
+                "min_attenuation_db": 0.0,
+                "max_attenuation_db": 40.0,
+                "settle_seconds": 0.5,
+                "call_timeout_seconds": 90.0,
+                "device_options": {
+                    "enable_supply_shutdown": False,
+                    "power_meter_average": 8,
+                },
+            },
+            "normalize_reference_rms": True,
+            "reference_target_rms_dbfs": -15.0,
+            "runtime_name": "basic_ilc",
+            "runtime_config": {"mu": 0.1},
+            "max_iterations": 3,
+        }

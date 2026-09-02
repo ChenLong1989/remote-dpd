@@ -863,9 +863,10 @@ function renderSession(payload) {
 
 function updateWorkflow(controller) {
   const busy = Boolean(state.session?.active_command_id || state.activeCommand);
-  let label = "DEFAULT SIMULATION";
+  const nouns = benchRunNouns();
+  let label = nouns.workflow;
   let status = "Ready to run the complete closed loop.";
-  let detail = "One click loads, configures, tunes, calibrates, iterates, stores, and stops RF.";
+  let detail = nouns.confirmNote;
   if (!state.initialized) {
     label = "INITIALIZING";
     status = "Loading default bench and waveform…";
@@ -878,13 +879,13 @@ function updateWorkflow(controller) {
     status = `${controller?.active_operation || "run"} · iteration ${controller?.iteration ?? 0}`;
     detail = "RF abort remains available while the command is active.";
   } else if (controller?.state === "completed") {
-    label = "SIMULATION COMPLETED";
+    label = nouns.completed;
     status = "Final evaluated result is ready.";
     detail = "Run again with the current draft, export MAT, or inspect the auxiliary results.";
   } else if (controller?.state === "failed" || controller?.state === "stopped") {
     label = "CONTROLLER REQUIRES RESET";
     status = controller.last_error?.message || `Controller is ${controller.state}.`;
-    detail = "Reset the controller before starting another default simulation.";
+    detail = "Reset the controller before starting another closed-loop run.";
   }
   state.nextAction = { kind: "workspace", value: "configuration" };
   byId("next-action-label").textContent = label;
@@ -927,8 +928,18 @@ function updateButtons() {
   else if (busy) byId("action-run").textContent = `Running · Iteration ${controller?.iteration ?? 0}`;
   else if (["failed", "stopped"].includes(controller?.state)) byId("action-run").textContent = "Reset Controller";
   else if (controller?.state === "completed") byId("action-run").textContent = "Run Again";
-  else byId("action-run").textContent = "Start Default Simulation";
+  else byId("action-run").textContent = benchRunNouns().cta;
+  byId("config-run").textContent = isPhysicalBench() ? "Start Real Bench" : "Start Simulation";
   updateWorkflow(controller);
+}
+
+const DEVICE_LABELS = {
+  simulated: "Simulated RF bench",
+  vst5842: "VST 5842 Real Bench (RFIC SCPI)",
+};
+
+function deviceLabel(deviceType) {
+  return DEVICE_LABELS[deviceType] || deviceType;
 }
 
 async function loadDevices() {
@@ -939,8 +950,7 @@ async function loadDevices() {
   state.devices.forEach((device) => {
     const option = document.createElement("option");
     option.value = device.device_type;
-    option.textContent =
-      device.device_type === "simulated" ? "Simulated RF bench" : device.device_type;
+    option.textContent = deviceLabel(device.device_type);
     select.append(option);
   });
   select.disabled = false;
@@ -972,6 +982,13 @@ function selectDevice(deviceType) {
   byId("ilc-mu").value = configuration.runtime_config.mu;
   byId("device-schema-label").textContent =
     `${deviceType.toUpperCase()} · V${state.device.schema.schema_version}`;
+  const hasPaModel = state.device.schema.fields.some(
+    (field) => field.name === "pa_coefficients",
+  );
+  byId("dut-section-eyebrow").textContent = hasPaModel ? "SIMULATION DUT" : "BENCH OPTIONS";
+  byId("dut-section-title").textContent = hasPaModel
+    ? "PA Model & Impairments"
+    : "Instrument Parameters";
   renderDeviceOptions(state.device.schema.fields, common.device_options || {});
   syncReferenceNormalizationControls();
   updateButtons();
@@ -1372,7 +1389,12 @@ function resetDefaults() {
   }
   initializeMeasurementBands();
   state.analysisKey = "";
-  setMessage("Default simulated configuration restored.", "success");
+  setMessage(
+    isPhysicalBench()
+      ? "Default real-bench configuration restored."
+      : "Default simulated configuration restored.",
+    "success",
+  );
   updateButtons();
 }
 
@@ -1398,10 +1420,73 @@ function applyDraft() {
   }
 }
 
+function isPhysicalBench() {
+  return Boolean(state.device) && state.device.device_type !== "simulated";
+}
+
+function benchRunNouns() {
+  if (isPhysicalBench()) {
+    return {
+      cta: "Start Real Bench Run",
+      workflow: "DEFAULT RUN",
+      completed: "RUN COMPLETED",
+      confirmNote: "A confirmation step protects the first RF start on this bench.",
+    };
+  }
+  return {
+    cta: "Start Default Simulation",
+    workflow: "DEFAULT SIMULATION",
+    completed: "SIMULATION COMPLETED",
+    confirmNote: "One click loads, configures, tunes, calibrates, iterates, stores, and stops RF.",
+  };
+}
+
 function runPrimaryAction() {
   const controllerState = state.session?.controller?.state;
   if (["failed", "stopped"].includes(controllerState)) submitAction("reset");
-  else submitAction("run");
+  else requestConfirmedRun();
+}
+
+function requestConfirmedRun() {
+  if (!isPhysicalBench()) {
+    submitAction("run");
+    return;
+  }
+  const dialog = byId("run-confirm-dialog");
+  if (dialog.open) return;
+  try {
+    renderRunConfirmSummary(collectConfiguration());
+    dialog.showModal();
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+function renderRunConfirmSummary(configuration) {
+  const common = configuration.device_config;
+  const rows = [
+    ["RF bench", state.device.device_type.toUpperCase()],
+    ["Center frequency", `${formatNumber(common.center_frequency_hz / 1e6, 3)} MHz`],
+    ["Sample rate", `${formatNumber(common.sample_rate_hz / 1e6, 2)} MS/s`],
+    ["Target power", `${formatNumber(common.target_power_dbm, 2)} dBm`],
+    ["Safety limit", `${formatNumber(common.safety_power_limit_dbm, 2)} dBm`],
+    ["Initial attenuation", `${formatNumber(common.initial_attenuation_db, 2)} dB`],
+    ["ILC iterations", String(configuration.max_iterations)],
+    ["Reference waveform", state.selectedWaveform || "—"],
+  ];
+  const summary = byId("run-confirm-summary");
+  summary.replaceChildren();
+  rows.forEach(([name, value], index) => {
+    const row = document.createElement("div");
+    row.className = index === rows.length - 1 ? "confirm-row wide" : "confirm-row";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    strong.title = value;
+    row.append(label, strong);
+    summary.append(row);
+  });
 }
 
 function collectMeasurementBands() {
@@ -1826,6 +1911,10 @@ function bindControls() {
   byId("config-apply").addEventListener("click", applyDraft);
   byId("config-run").addEventListener("click", () => {
     byId("configuration-dialog").close();
+    requestConfirmedRun();
+  });
+  byId("run-confirm-accept").addEventListener("click", () => {
+    byId("run-confirm-dialog").close();
     submitAction("run");
   });
   byId("next-action").addEventListener("click", () => switchWorkspace("configuration"));

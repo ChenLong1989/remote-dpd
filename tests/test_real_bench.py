@@ -313,6 +313,22 @@ class Vst5842RegistryAndSchemaTests(RealBenchTestCase):
         self.assertIsInstance(bench.power_sensor, PowerSensor)
         self.assertIs(bench.transmitter, bench.receiver)
 
+    def test_quick_start_profile_matches_smoke_verified_operating_point(self):
+        profile = Vst5842RFBench().quick_start_configuration()
+        self.assertEqual(profile["device_type"], "vst5842")
+        common = profile["device_config"]
+        self.assertEqual(common["center_frequency_hz"], 1.84e9)
+        self.assertEqual(common["sample_rate_hz"], 491.52e6)
+        self.assertEqual(common["target_power_dbm"], 38.0)
+        self.assertEqual(common["safety_power_limit_dbm"], 39.0)
+        self.assertEqual(common["initial_attenuation_db"], 22.0)
+        self.assertEqual(common["call_timeout_seconds"], 90.0)
+        self.assertEqual(common["average_segment_count"], 8)
+        self.assertEqual(profile["max_iterations"], 3)
+        self.assertEqual(profile["runtime_config"], {"mu": 0.1})
+        self.assertFalse(common["device_options"]["enable_supply_shutdown"])
+        self.assertEqual(common["device_options"]["power_meter_average"], 8)
+
     def test_schema_defaults_fill_and_unknown_options_rejected(self):
         options = VST5842_DEVICE_SCHEMA.validate_options({})
         self.assertEqual(options["scpi_resource"], SCPI_RESOURCE)
@@ -324,7 +340,7 @@ class Vst5842RegistryAndSchemaTests(RealBenchTestCase):
         self.assertEqual(options["external_attenuation_db"], 53.5)
         self.assertEqual(options["waveform_name"], WAVEFORM_NAME)
         self.assertEqual(options["power_meter_average"], 64)
-        self.assertTrue(options["enable_supply_shutdown"])
+        self.assertFalse(options["enable_supply_shutdown"])
         self.assertTrue(options["enable_supply_interlock"])
         self.assertEqual(
             options["aux_supply_resources"],
@@ -826,7 +842,12 @@ class N1912APowerSensorTests(RealBenchTestCase):
 
 class PowerSafetyRedLineTests(RealBenchTestCase):
     def test_safe_shutdown_turns_drain_off_and_never_enables_outputs(self):
-        bench = self.connect_and_configure(Vst5842RFBench())
+        # The schema default keeps the drain supply untouched; this test pins
+        # the shutdown path itself, so it opts in explicitly.
+        bench = self.connect_and_configure(
+            Vst5842RFBench(),
+            self.make_config(device_options={"enable_supply_shutdown": True}),
+        )
         self.start_transmitting(bench)
         bench.safe_shutdown(TIMEOUT)
         bench.disconnect(TIMEOUT)

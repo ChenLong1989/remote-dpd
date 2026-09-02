@@ -626,6 +626,20 @@ class RFBench(ABC):
     def parameter_schema(self) -> DeviceParameterSchema:
         """Return the adapter-specific dynamic parameter schema."""
 
+    def quick_start_configuration(self) -> dict[str, Any] | None:
+        """Return the adapter-recommended one-click closed-loop configuration.
+
+        The payload mirrors the Web ``default_configuration`` structure: a
+        ``device_config`` mapping (common ``DeviceConfig`` fields plus
+        schema-validated ``device_options``) alongside ``normalize_reference_rms``,
+        ``reference_target_rms_dbfs``, ``runtime_name``, ``runtime_config`` and
+        ``max_iterations``. Adapters that do not ship a recommendation keep the
+        default ``None`` and consumers fall back to generic defaults. The method
+        must stay pure local data: no hardware I/O is allowed here.
+        """
+
+        return None
+
     @abstractmethod
     def connect(self, timeout_seconds: float) -> None:
         """Connect all unique underlying instruments."""
@@ -658,8 +672,15 @@ def _create_simulated_bench() -> RFBench:
     return SimulatedRFBench()
 
 
+def _create_vst5842_bench() -> RFBench:
+    from .real_bench import Vst5842RFBench
+
+    return Vst5842RFBench()
+
+
 _RF_BENCH_FACTORIES: dict[str, RFBenchFactory] = {
     "simulated": _create_simulated_bench,
+    "vst5842": _create_vst5842_bench,
 }
 
 
