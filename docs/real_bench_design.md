@@ -292,7 +292,10 @@ Web 模式部署前置步骤（本机 Windows 已验证可完整运行，含 sim
    文案已含启动顺序指引）。
 4. Web 启动：`remote-dpd --exchange-root <root> --mode web --waveform-root <root>\waveforms
    --web-port 8000`（本机访问默认 127.0.0.1；可信 LAN 需 `--web-host 0.0.0.0
-   --web-allowed-host <私网 IP>`）。
+   --web-allowed-host <私网 IP>`）。本机日常使用可双击桌面快捷方式 "Remote DPD
+   Workbench"：`scripts/start_web_console.bat` 从项目 venv 启动服务（exchange root
+   固定为 `<project>/web-console`，端口 8901），等待健康检查通过后自动打开默认
+   浏览器；关闭最小化的 "remote-dpd web console" 控制台窗口即停止服务。
 5. 联调窗口约束：关闭 InstrumentStudio；桌面常驻脚本（pmGUI/SinglePS/pa.py）竞争
    功率计 LAN 与 GPIB，读数异常时先排查；IS 与 SCPI 服务器可共存但 IS 打开时勿发
    SCPI 测量命令。
