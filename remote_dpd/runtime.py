@@ -375,6 +375,13 @@ def _fit_memory_polynomial(
                 if j != i:
                     gram[j, i] += np.conj(value)
 
+    # An overflowing basis column must fail closed: silently dropping it
+    # (the scales > 0 filter also drops non-finite energies) would return a
+    # finite candidate from a degenerate low-order model.
+    if not np.all(np.isfinite(column_energy)) or not math.isfinite(z_energy):
+        raise RuntimeInputError(
+            "forward model basis overflowed for this input scale"
+        )
     scales = np.sqrt(column_energy / total)
     active = np.nonzero(scales > 0.0)[0]
     coefficients = np.zeros(count, dtype=np.complex128)

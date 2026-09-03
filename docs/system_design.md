@@ -9,7 +9,7 @@
 当前能力边界：
 
 - 内置两个 ILC runtime：基础形式 `y_next = y_current - mu * (z_current - x)`，以及每轮先以复 LS 拟合 PA 前向模型、再把误差经模型 Jacobian 伴随反向传播到 PA 输入位置的 `forward_model_ilc`；PA 深度压缩时只有后者保持单调收敛。
-- 只内置 `simulated` 设备；真实一体式或分立仪器适配器按需注册。
+- 内置 `simulated` 与真机 `vst5842`（本机 NI RFIC 测试站适配器，经 NI RFIC SCPI 服务器驱动 PXIe-5842 收发，需 `real-hardware` 可选依赖与本机 NI 软件栈）；其他一体式或分立仪器适配器按需注册。
 - 对外常驻入口可选择版本化 inbox/outbox MAT 命令服务或可信网络 Web 控制台；Web 模式同进程保留 MAT watcher。
 - 一次只运行一个非 stop 命令和一个闭环任务；不恢复未完成的硬件会话，不提供多用户或设备并行。
 - 任务完整历史保存为自动清理的临时 artifact；正式 MAT 只保存最终 `x/y/z` 和最终指标。
@@ -27,6 +27,7 @@
 | FastAPI `>=0.135,<1` | 本机 REST/SSE、静态控制台和严格请求边界 |
 | uvicorn `>=0.30,<1` | 默认 loopback、可显式可信 LAN、单 worker 的 Web ASGI 服务 |
 | h5py（可选） | MAT v7.3/HDF5 的有限顶层 dataset 回退 |
+| `real-hardware` 可选组（PyVISA/nptdms） | 真机适配器 `vst5842` 的运行时包（SCPI 会话与 TDMS 波形写出）；NI-VISA 与 NI RFIC 软件栈由本机提供 |
 
 项目不再依赖 PyTorch、MATLAB Engine、MATLAB Runtime 或 MATLAB License。
 
@@ -110,6 +111,7 @@ flowchart LR
 | `web_analysis.py` | 完整周期频谱、measurement-band/ACLR/PAPR、AM/AM/AM/PM 和有界分析缓存 |
 | `web_bridge.py` | Web 命令到共享文件仲裁器的映射、状态/metrics/run DTO 和抽样 |
 | `web.py` / `web_static/` | 可信网络 FastAPI、REST/SSE、安全中间件和原生单页控制台 |
+| `real_bench.py` | 本机真机适配器 `vst5842`：经 RFIC SCPI 服务器的 PXIe-5842 发射/接收、N1912A 功率计和 44 V 电源守卫（见 `docs/real_bench_design.md`） |
 | `cli.py` | file/web 模式参数、RunStore/FileCommandService/uvicorn 生命周期 |
 | `exceptions.py` | 通用 MAT 错误层次 |
 
@@ -203,6 +205,8 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 
 修改请求要求同源 Origin、`application/json` 和自定义控制头，实际流式 body 上限 1 MiB，拒绝重复 key、非有限常量和过深/过大 JSON。服务不启用 CORS，TrustedHost 只接受 loopback 和显式私网地址。页面按设备 schema 生成配置和 PA 系数编辑，提供 R&S 风格固定单屏、默认仿真一键 run、配置/Expert/Runs dialogs、固定 RF abort、完整周期有界分析、历史 run inspector 和最终 MAT 下载。详细契约见 `docs/web_console_design.md`。
 
+真机 bench 的 Web 集成：`vst5842` 位于 `device.py` 内置注册表，所有进程可见；每设备 Web quick-start 默认配置由 `RFBench.quick_start_configuration()` 契约提供；Web 页面对物理 bench 使用设备感知文案并在一键 run 前强制确认弹窗（`docs/web_console_design.md` §10）。真机运行安全语义：quick-start 默认 `target_power_dbm=38.0`（工作点）、`enable_supply_shutdown=false`（44 V 纯人工管理，run 终态只关 TX/RF）。`WaveformRepository` 与结果下载在 Windows 上使用路径锚定后备，MAT 原子写在 Windows 上带短暂替换重试（`docs/web_console_design.md` §10.4）。
+
 ### Web 射频分析边界
 
 独立只读的 Web 射频分析层从当前 controller snapshot 或 cleanup guard 内的历史 `RunStore` 读取不可变 `x/y/z`，计算完整周期 `Z₀/Zₙ/(Zₙ-X)` 频谱、支持多 TX reference 的 measurement-band/ACLR 功率、PAPR 以及有界 AM/AM、AM/PM 数据；它不属于 controller、预处理器或 DPD runtime，不持有设备对象，也不能改变 RF、命令、run manifest 或正式结果。
@@ -243,11 +247,17 @@ Web 模式默认使用 `127.0.0.1`，可信 LAN 可显式绑定 `0.0.0.0` 并配
 - waveform traversal/symlink/root 替换/FIFO/MAT 类型/数字安全/规模上限；
 - Web Host/Origin/Content-Type/控制头/body/JSON、动态设备 schema、分步/自动命令、跨 Web/file busy 与 stop、run 浏览/preview/download；
 - 完整周期 DFT、Parseval、Nyquist/band 边界、ACLR 符号、PAPR、AM/AM/AM/PM、分析资源预算和只读 session/run API；
-- R&S 风格四工作区、RF 状态/abort、trace/marker、measurement-band、历史重分析和 `1920×1080`/`1366×768` 浏览器端到端。
+- R&S 风格四工作区、RF 状态/abort、trace/marker、measurement-band、历史重分析和 `1920×1080`/`1366×768` 浏览器端到端；
+- 真机适配器注册表集成、quick-start 契约三态（默认/simulated/vst5842）、Web 设备列表真机 profile 与 simulated 回归、Windows 平台文件访问后备。
+
+符号链接拒绝与"root 路径替换不跟随"等 POSIX fd 语义测试在无法创建 symlink 或不支持描述符替换语义的主机（无特权 Windows）按 `tests/platform_guards.py` 探测结果跳过；POSIX 全量执行。Windows 主机的自动测试套件 2026-09-03 起全绿（276 passed / 9 skipped）。
 
 当前尚未实现：
 
-- 真实射频设备适配器；
 - 具体外部 DPD runtime 载体加载器；
 - 未完成任务的进程重启恢复；
 - 完整 MAT v7.3 struct/object-reference 解码。
+
+真机适配器 `vst5842` 已实现并通过无硬件契约测试与真机闭环冒烟（2026-09-02，
+脚本直连）；Web 工作台真机联调（Expert 手动 + 一键全自动）待用户安排窗口（见
+`docs/real_bench_design.md` §7）。

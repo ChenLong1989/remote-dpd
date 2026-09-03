@@ -287,6 +287,16 @@ canvas { display: block; width: 100%; height: 100%; min-height: 0; background: v
 .event-list { display: grid; gap: 3px; max-height: 115px; overflow: auto; }
 .event-item { display: grid; grid-template-columns: 135px 65px 1fr; gap: 5px; padding: 5px 6px; border-left: 2px solid #596167; background: #191c1f; font-size: 8px; }
 
+.confirm-dialog[open] { grid-template-rows: 48px minmax(0, 1fr) 46px; width: min(560px, calc(100vw - 30px)); height: min(430px, calc(100dvh - 72px)); }
+.confirm-body { display: grid; align-content: start; gap: 12px; padding: 14px; overflow: auto; }
+.confirm-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--amber); background: #171a1c; color: #d8b98a; font-size: 10px; line-height: 1.6; }
+.confirm-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; border: 1px solid #484e52; background: #41474b; }
+.confirm-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; background: #24282c; }
+.confirm-row.wide { grid-column: 1 / -1; }
+.confirm-row span { color: #8c9397; font-size: 8px; font-weight: 700; text-transform: uppercase; }
+.confirm-row strong { overflow: hidden; color: #e5e7e8; font: 10px "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.confirm-accept { border-color: var(--amber); }
+
 @media (max-width: 1450px) {
   .instrument-header { grid-template-columns: 170px 94px 88px 70px minmax(86px, 1fr) minmax(86px, 1fr) 72px 61px 63px 83px 54px 48px 108px; }
   .header-cell { padding-inline: 6px; }

@@ -52,7 +52,7 @@ External MAT producer ─────────────┘                
 
 ## 3. Waveform repository
 
-`WaveformRepository` 在启动时打开并持有真实 waveform root 的目录描述符。所有浏览和加载使用 `dir_fd`、`O_DIRECTORY`、`O_NOFOLLOW` 和最终文件 `O_NONBLOCK`：
+`WaveformRepository` 在启动时锚定真实 waveform root：POSIX 打开并持有目录描述符，Windows 使用解析后的路径锚定加逐级 `lstat` 校验后备（平台差异见 §10.4）。所有浏览和加载在 POSIX 上使用 `dir_fd`、`O_DIRECTORY`、`O_NOFOLLOW` 和最终文件 `O_NONBLOCK`：
 
 - API 只接受规范化 POSIX 相对路径；拒绝绝对路径、`.`、`..`、重复分隔符、反斜线、盘符和 NUL；
 - 每一级父目录和最终文件都不跟随符号链接；root 路径启动后被替换也不会切换到新目录；
@@ -112,7 +112,7 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 单页控制台使用固定 `100dvh` 仪表布局，document 不滚动。persistent header 持续显示 TX/RX/PWR、Controller、RF Output、中心频率、采样率、功率、衰减、迭代以及 `CONFIG/RUNS/RF OFF`。主区同时显示 `Z₀/Zₙ/Eₙ` 频谱、核心 DPD result 和唯一主 CTA；底部单一辅助 pane 在 Convergence、ACLR、AM/AM、AM/PM、Power Tune、Alignment 间切换。
 
-Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Simulation DUT 页签分组。Signal 页提供 DPD runtime 选择（`forward_model_ilc` / `basic_ilc`）和对应 `mu`；模型结构参数不在页面暴露，文件/JSON 入口可全量配置。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect。
+Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Bench / DUT 页签分组。Signal 页提供 DPD runtime 选择（`forward_model_ilc` / `basic_ilc`）和对应 `mu`；模型结构参数不在页面暴露，文件/JSON 入口可全量配置。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect；物理 bench 的一键提交前增加确认弹窗（§10.3），弹窗摘要同时显示所选 runtime。
 
 新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用 reference RMS normalization `true/-15 dBFS`、物理 Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`forward_model_ilc` runtime、`mu=1.0` 和 15 次 ILC。simulated schema v3 默认 PA 的完整实测全程单调收敛，NMSE 从 `-24.84 dB` 改善到 `-38.01 dB`，左右 ACLR 从 `-28.19/-29.29 dBc` 改善到 `-41.19/-42.48 dBc`，最终峰值约 `0.519`。同场景下 `basic_ilc` 在第 11 轮后开始发散并推高数字峰值，可在 Configuration 中显式选择以复现。数字安全上限和 runtime 通用默认保持不变。
 
@@ -231,7 +231,7 @@ profile 最多包含 32 个 band、5 条 trace 和 4096 个频谱显示点。最
 
 ### 9.2 弹窗配置
 
-`CONFIG`、`EXPERT`、`RUNS` 使用原生 `<dialog>`。配置 dialog 使用 `Signal`、`Power & Safety`、`Analysis Bands`、`Simulation DUT` 页签，每次只显示一组字段；footer 固定提供 `RESET DEFAULTS`、`CANCEL`、`APPLY DRAFT` 和 `START SIMULATION`。Apply 只保留前端 draft，只有 Configure/Run 动作才提交服务端。
+`CONFIG`、`EXPERT`、`RUNS` 使用原生 `<dialog>`。配置 dialog 使用 `Signal`、`Power & Safety`、`Analysis Bands`、`Bench / DUT` 页签，每次只显示一组字段；footer 固定提供 `RESET DEFAULTS`、`CANCEL`、`APPLY DRAFT` 和 `START RUN`（simulated 显示 `START SIMULATION`，物理 bench 显示 `START REAL BENCH`）。Apply 只保留前端 draft，只有 Configure/Run 动作才提交服务端。
 
 默认字段、默认 PA 系数和默认 Main/L1/R1 行必须在 `1366×768` 对应 tab 中直接可见。任意扩展数量的 runs/events/coefficients/bands 可以在局部、有清晰边界的列表 pane 内滚动，但 dialog 与 document 本身不依赖页面滚动。dialog 打开时固定 header 中的 RF Output/abort 仍可见；Escape/Cancel 不修改 RF 或 controller。
 
@@ -256,3 +256,55 @@ profile 最多包含 32 个 band、5 条 trace 和 4096 个频谱显示点。最
 - 打开每个 dialog 后 document 仍不滚动；默认 tab 内容完整可用，只有扩展长列表出现局部滚动。
 - 首次加载后不进入任何 dialog，单击主 CTA 可以使用默认 simulated 配置和首个 waveform 完成完整自动闭环并显示最终结果。
 - Expert 全部既有动作、measurement-band 编辑、历史 run 重分析/下载、SSE 重连、Marker 和相对/绝对频率继续可用。
+
+## 10. 真机 bench 支持
+
+### 10.1 设备可见性与 quick-start 来源
+
+`vst5842`（见 `docs/real_bench_design.md`）位于 `device.py` 内置注册表，
+`GET /api/v1/devices` 自动返回其动态 schema 表单。每设备 `default_configuration`
+来自 `RFBench.quick_start_configuration()` 契约（见 `docs/device_design.md`）：
+simulated 返回 `forward_model_ilc` 默认（PR #10 决策，mu 1.0），vst5842 返回真机
+工作点 profile（冒烟验证的 `basic_ilc` / mu 0.1，可在 Signal 页切换 runtime），结构校验失败或未提供
+profile 的设备回退通用 `DeviceConfig()` 默认并记录 warning。
+
+### 10.2 设备感知文案
+
+前端按所选设备类型切换工作台语义文案：主 CTA 在 simulated 下显示
+`START DEFAULT SIMULATION`，物理 bench（当前即 `vst5842`）下显示
+`START REAL BENCH RUN`；workflow 状态、初始加载提示、完成/失败文案同步随设备
+类型调整。配置 dialog 的 `Bench / DUT` 页签下，simulated 显示 PA Model &
+Impairments 内容，其他设备显示 `BENCH OPTIONS / Instrument Parameters` 与动态
+schema 表单（PA 系数区块按 schema 字段存在性隐藏）。
+
+### 10.3 真机一键确认交互
+
+选中非 `simulated` 设备时，主 CTA 与配置 dialog 的 `START` 动作在提交 `run`
+命令前弹出原生确认 dialog，显示设备名、中心频率、采样率、目标功率、安全限值、
+初始衰减、迭代数与参考波形；只有显式 `Confirm & Run` 后才经 `WebCommandBridge`
+提交命令，Escape/Cancel 不改变 RF 与 controller 状态。simulated 保持一键直达。
+确认弹窗是纯交互层防护，不放松任何服务端互斥、安全校验与命令路径。
+
+### 10.4 Windows 平台的文件访问模型
+
+`WaveformRepository` 与结果下载的 `_AnchoredDirectory` 在 POSIX 上使用目录描述符
+锚定 + `O_NOFOLLOW` + `dir_fd`；Windows 无法打开目录描述符，因此使用路径后备：
+启动时 `resolve(strict=True)` 锚定根目录，每次访问前逐级 `lstat` 校验并拒绝
+symlink 与任何 reparse point，最终以 `O_BINARY` 打开并 `fstat` 复验常规文件。
+该后备存在 check-then-use 窗口，适用于本控制台既定的本机/可信单用户威胁模型
+（见 §5）。原子写 `os.replace` 在 Windows 上对刚写入文件可能遭遇杀毒/索引短暂
+占用（`PermissionError`），`protocol.replace_with_retry` 以有界短重试吸收；
+结果发布前的 `fsync` 使用读写句柄，因为 Windows 拒绝对只读句柄 `fsync`。
+POSIX 行为保持单次语义不变。
+
+### 10.5 验收
+
+- `/api/v1/devices` 同时列出 `simulated` 与 `vst5842`，各自 `default_configuration`
+  与对应适配器 quick-start 一致；simulated 响应与 quick-start 契约化之前逐字段
+  一致。
+- 选 `vst5842` 后配置表单按 schema v2 渲染；CTA 与确认弹窗文案正确；一键确认
+  取消后无命令提交。
+- Windows 主机端到端：simulated 一键闭环完成（15 轮）、结果 MAT 下载 200、页面
+  频谱/结果渲染正常（2026-09-03 实测通过）。
+- 真机联调（用户窗口）覆盖 Expert 手动全动作与一键 run 全自动闭环，44 V 全程
+  不被触碰（`enable_supply_shutdown=false`）。

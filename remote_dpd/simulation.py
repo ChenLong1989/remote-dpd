@@ -194,6 +194,31 @@ class SimulatedRFBench(RFBench, Transmitter, Receiver, PowerSensor):
 
         return SIMULATED_DEVICE_SCHEMA
 
+    def quick_start_configuration(self) -> dict[str, object]:
+        """Deterministic one-click Web profile for the simulated bench.
+
+        The default runtime is ``forward_model_ilc`` (PR #10 decision: its
+        exact PA-model gradient converges where the unit-Jacobian basic ILC
+        diverges on strongly compressed simulated PAs), paired with the
+        491.52 MS/s waveform domain, a raised capture ceiling, reference RMS
+        normalization at -15 dBFS, and 15 ILC iterations at mu 1.0.
+        """
+
+        return {
+            "device_type": "simulated",
+            "device_config": {
+                "sample_rate_hz": 491.52e6,
+                "device_options": {
+                    "max_capture_samples": 10_000_000,
+                },
+            },
+            "normalize_reference_rms": True,
+            "reference_target_rms_dbfs": -15.0,
+            "runtime_name": "forward_model_ilc",
+            "runtime_config": {"mu": 1.0},
+            "max_iterations": 15,
+        }
+
     @property
     def max_capture_samples(self) -> int:
         """Return the configured local capture-size limit without device I/O."""

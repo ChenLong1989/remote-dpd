@@ -30,6 +30,7 @@ from .controller import (
     ControllerState,
 )
 from .device import DeviceConfig, create_rf_bench
+from .protocol import replace_with_retry
 
 if TYPE_CHECKING:
     from .storage import RunRecorder, RunStore
@@ -2082,9 +2083,11 @@ def _atomic_publish_file(source: Path, target: Path) -> None:
     temporary = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.tmp.mat")
     try:
         shutil.copyfile(source, temporary)
-        with temporary.open("rb") as handle:
+        # "ab" keeps the descriptor read-write: Windows refuses fsync on
+        # read-only handles with EBADF even though no bytes are written.
+        with temporary.open("ab") as handle:
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        replace_with_retry(temporary, target)
     except Exception as exc:
         try:
             temporary.unlink(missing_ok=True)
@@ -2329,7 +2332,7 @@ def _atomic_save_mat(path: Path, values: Mapping[str, Any], *, lock: Lock) -> No
                 do_compression=False,
                 long_field_names=True,
             )
-            os.replace(temporary, path)
+            replace_with_retry(temporary, path)
         except Exception as exc:
             try:
                 temporary.unlink(missing_ok=True)
