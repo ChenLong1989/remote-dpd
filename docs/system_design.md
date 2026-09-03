@@ -8,7 +8,7 @@
 
 当前能力边界：
 
-- 只内置基础 ILC，更新式为 `y_next = y_current - mu * (z_current - x)`。
+- 内置两个 ILC runtime：基础形式 `y_next = y_current - mu * (z_current - x)`，以及每轮先以复 LS 拟合 PA 前向模型、再把误差经模型 Jacobian 伴随反向传播到 PA 输入位置的 `forward_model_ilc`；PA 深度压缩时只有后者保持单调收敛。
 - 内置 `simulated` 与真机 `vst5842`（本机 NI RFIC 测试站适配器，经 NI RFIC SCPI 服务器驱动 PXIe-5842 收发，需 `real-hardware` 可选依赖与本机 NI 软件栈）；其他一体式或分立仪器适配器按需注册。
 - 对外常驻入口可选择版本化 inbox/outbox MAT 命令服务或可信网络 Web 控制台；Web 模式同进程保留 MAT watcher。
 - 一次只运行一个非 stop 命令和一个闭环任务；不恢复未完成的硬件会话，不提供多用户或设备并行。
@@ -99,7 +99,7 @@ flowchart LR
 | `simulation.py` | 集成式仿真发射/接收/功率设备、周期有记忆 PA 和扰动 |
 | `dsp.py` | RMS、NMSE、周期 FFT 插值、小数移位和对齐原语 |
 | `preprocessing.py` | `CaptureBatch`、每批时延/相位对齐、相干平均和固定增益 |
-| `runtime.py` | 版本化 `DPDRuntime`、基础 ILC 和算法注册表 |
+| `runtime.py` | 版本化 `DPDRuntime`、基础/前向模型 ILC 和算法注册表 |
 | `safety.py` | TX 候选峰值/RMS 的非修改式数字检查 |
 | `power_control.py` | 初始衰减调节、越界恢复、调节轨迹和后续功率监控 |
 | `controller.py` | 分步/自动状态机、抓取拆批、原子迭代提交、停止和安全收尾 |
@@ -147,7 +147,7 @@ z_0 = aligned_average * gain_correction
 
 后续每轮继续估计时延和相位，但固定复用该正实增益，使硬件幅度变化进入 ILC 误差。预处理要求反馈采样率与参考一致，不执行隐式重采样。
 
-`BasicILCRuntime` 默认 `mu=0.5`。runtime 输入和输出均是一维、有限、等长、不可写副本；算法不访问设备、原始抓取、文件或任务状态，也不执行预处理、AGC 或削峰。
+`BasicILCRuntime` 默认 `mu=0.5`，`ForwardModelILCRuntime` 默认 `mu=1.0`。前向模型 runtime 每轮在当前 `(y, z)` 上做岭正则复 LS 拟合并用精确实梯度方向更新；其收敛稳定边界为 `mu < 2 / lambda_max(J^H J)`。runtime 输入和输出均是一维、有限、等长、不可写副本；算法不访问设备、原始抓取、文件或任务状态，也不执行预处理、AGC 或削峰。
 
 ## 7. 功率与闭环状态机
 

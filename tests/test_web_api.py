@@ -189,8 +189,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-6")
-        script = self.client.get("/static/app.js?v=single-screen-6")
+        styles = self.client.get("/static/styles.css?v=single-screen-7")
+        script = self.client.get("/static/app.js?v=single-screen-7")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -206,11 +206,14 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
         self.assertIn('id="run-confirm-dialog"', page.text)
-        self.assertIn("single-screen-6", page.text)
+        self.assertIn("single-screen-7", page.text)
         self.assertIn('value="target_error" checked', page.text)
         self.assertIn('data-aux-view="aclr"', page.text)
         self.assertIn('id="normalize-reference-rms"', page.text)
         self.assertIn('id="reference-target-rms"', page.text)
+        self.assertIn('id="runtime-name"', page.text)
+        self.assertIn('value="forward_model_ilc"', page.text)
+        self.assertIn('byId("runtime-name").value', script.text)
         self.assertEqual(health.json()["status"], "ok")
         device_types = [entry["device_type"] for entry in devices.json()["devices"]]
         self.assertIn("simulated", device_types)
@@ -255,7 +258,8 @@ class WebAPITests(unittest.TestCase):
         )
         self.assertEqual(noise_field["default"], -85.74)
         self.assertEqual(default_configuration["max_iterations"], 15)
-        self.assertEqual(default_configuration["runtime_config"]["mu"], 0.35)
+        self.assertEqual(default_configuration["runtime_name"], "forward_model_ilc")
+        self.assertEqual(default_configuration["runtime_config"]["mu"], 1.0)
         schema_capture = next(
             field
             for field in simulated["schema"]["fields"]

@@ -197,9 +197,11 @@ class SimulatedRFBench(RFBench, Transmitter, Receiver, PowerSensor):
     def quick_start_configuration(self) -> dict[str, object]:
         """Deterministic one-click Web profile for the simulated bench.
 
-        Values mirror the historical Web quick-start defaults: the default
+        The default runtime is ``forward_model_ilc`` (PR #10 decision: its
+        exact PA-model gradient converges where the unit-Jacobian basic ILC
+        diverges on strongly compressed simulated PAs), paired with the
         491.52 MS/s waveform domain, a raised capture ceiling, reference RMS
-        normalization at -15 dBFS, and 15 ILC iterations at mu 0.35.
+        normalization at -15 dBFS, and 15 ILC iterations at mu 1.0.
         """
 
         return {
@@ -212,8 +214,8 @@ class SimulatedRFBench(RFBench, Transmitter, Receiver, PowerSensor):
             },
             "normalize_reference_rms": True,
             "reference_target_rms_dbfs": -15.0,
-            "runtime_name": "basic_ilc",
-            "runtime_config": {"mu": 0.35},
+            "runtime_name": "forward_model_ilc",
+            "runtime_config": {"mu": 1.0},
             "max_iterations": 15,
         }
 

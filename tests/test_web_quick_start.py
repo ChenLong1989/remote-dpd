@@ -15,7 +15,7 @@ from remote_dpd.web_bridge import _web_default_configuration
 
 
 class WebQuickStartConfigurationTests(unittest.TestCase):
-    def test_simulated_profile_keeps_historical_web_defaults(self):
+    def test_simulated_profile_defaults_to_forward_model_ilc(self):
         bench = SimulatedRFBench()
         configuration = _web_default_configuration(
             "simulated", bench, bench.parameter_schema
@@ -30,7 +30,10 @@ class WebQuickStartConfigurationTests(unittest.TestCase):
         )
         self.assertTrue(configuration["normalize_reference_rms"])
         self.assertEqual(configuration["reference_target_rms_dbfs"], -15.0)
-        self.assertEqual(configuration["runtime_config"], {"mu": 0.35})
+        # PR #10 decision: the simulated quick-start runs the exact-gradient
+        # forward-model ILC at mu 1.0 instead of the unit-Jacobian basic ILC.
+        self.assertEqual(configuration["runtime_name"], "forward_model_ilc")
+        self.assertEqual(configuration["runtime_config"], {"mu": 1.0})
         self.assertEqual(configuration["max_iterations"], 15)
 
     def test_vst5842_profile_matches_smoke_verified_operating_point(self):
@@ -57,6 +60,9 @@ class WebQuickStartConfigurationTests(unittest.TestCase):
         self.assertFalse(common["device_options"]["enable_supply_shutdown"])
         self.assertEqual(common["device_options"]["power_meter_average"], 8)
         self.assertEqual(configuration["max_iterations"], 3)
+        # The real bench keeps the smoke-verified classic ILC as its default;
+        # the Web runtime selector allows switching to forward_model_ilc.
+        self.assertEqual(configuration["runtime_name"], "basic_ilc")
         self.assertEqual(configuration["runtime_config"], {"mu": 0.1})
         self.assertTrue(configuration["normalize_reference_rms"])
         self.assertEqual(configuration["reference_target_rms_dbfs"], -15.0)

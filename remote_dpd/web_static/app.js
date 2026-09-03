@@ -979,6 +979,7 @@ function selectDevice(deviceType) {
   byId("rx-channel").value = common.rx_channel;
   byId("trigger-source").value = common.trigger;
   byId("max-iterations").value = configuration.max_iterations;
+  byId("runtime-name").value = configuration.runtime_name;
   byId("ilc-mu").value = configuration.runtime_config.mu;
   byId("device-schema-label").textContent =
     `${deviceType.toUpperCase()} · V${state.device.schema.schema_version}`;
@@ -1227,7 +1228,7 @@ function collectConfiguration() {
       call_timeout_seconds: finiteValue("call-timeout", "Call timeout"),
       device_options: options,
     },
-    runtime_name: "basic_ilc",
+    runtime_name: byId("runtime-name").value,
     runtime_config: { mu: finiteValue("ilc-mu", "ILC mu") },
     max_iterations: integerValue("max-iterations", "ILC iterations"),
   };
@@ -1471,6 +1472,12 @@ function renderRunConfirmSummary(configuration) {
     ["Target power", `${formatNumber(common.target_power_dbm, 2)} dBm`],
     ["Safety limit", `${formatNumber(common.safety_power_limit_dbm, 2)} dBm`],
     ["Initial attenuation", `${formatNumber(common.initial_attenuation_db, 2)} dB`],
+    [
+      "DPD runtime",
+      configuration.runtime_name === "forward_model_ilc"
+        ? "Forward-Model ILC"
+        : "Basic ILC",
+    ],
     ["ILC iterations", String(configuration.max_iterations)],
     ["Reference waveform", state.selectedWaveform || "—"],
   ];

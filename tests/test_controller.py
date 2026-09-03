@@ -306,6 +306,43 @@ class ClosedLoopControllerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ClosedLoopConfig(DeviceConfig(), reference_target_rms_dbfs=0.1)
 
+    def test_effective_config_records_normalized_runtime_defaults(self):
+        expected_configs = {
+            "basic_ilc": {"mu": 0.5},
+            "forward_model_ilc": {
+                "mu": 1.0,
+                "orders": (1, 3, 5),
+                "memory_depths": (0, 1, 2),
+                "ridge": 1e-8,
+            },
+        }
+        for runtime_name, expected in expected_configs.items():
+            with self.subTest(runtime=runtime_name):
+                bench = FakeRFBench(self.x.size * 100)
+                controller = ClosedLoopController(bench)
+                controller.connect()
+                config = self.make_config(
+                    runtime_name=runtime_name,
+                    runtime_config={},
+                )
+
+                snapshot = controller.apply_config(config)
+
+                recorded = dict(snapshot.config.runtime_config)
+                self.assertEqual(recorded, expected)
+                payload = snapshot.config.to_dict()
+                json.dumps(payload, allow_nan=False)
+                self.assertEqual(payload["runtime_config"]["mu"], expected["mu"])
+                if runtime_name == "forward_model_ilc":
+                    self.assertEqual(payload["runtime_config"]["orders"], [1, 3, 5])
+                    self.assertEqual(
+                        payload["runtime_config"]["memory_depths"],
+                        [0, 1, 2],
+                    )
+                    self.assertEqual(payload["runtime_config"]["ridge"], 1e-8)
+                # The caller's original mapping must stay untouched.
+                self.assertEqual(dict(config.runtime_config), {})
+
     def test_reference_rms_normalization_defaults_and_reuses_source_on_reconfigure(
         self,
     ):

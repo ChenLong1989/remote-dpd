@@ -228,6 +228,7 @@ Web 一键真机默认配置（冒烟验证参数 + 用户决策工作点）：
 | `enable_supply_shutdown` | false | 用户决策（44 V 纯人工） |
 | `power_meter_average` | 8 | 冒烟值（64 次平均拖慢调谐） |
 | RMS 归一化 | true / -15 dBFS | 与冒烟一致（全局默认） |
+| DPD runtime | `basic_ilc` / mu 0.1 | 冒烟验证值；Signal 页可切换 `forward_model_ilc`（PR #10），真机 FM-ILC 参数待联调验证 |
 
 每轮迭代约 1 分钟（8 段 × 2–4 s 采集 + settle + 功率计平均），3 轮一键闭环
 含调谐约 4–6 分钟；Web 一键提交前的确认弹窗见 `docs/web_console_design.md` §10。
