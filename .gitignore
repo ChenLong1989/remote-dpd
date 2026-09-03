@@ -10,3 +10,6 @@ docs/current_plan.md
 
 # local web-console exchange root (double-click launcher data)
 web-console/
+
+# local desktop/project shortcuts
+*.lnk
