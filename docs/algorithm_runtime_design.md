@@ -43,23 +43,32 @@ y_candidate = y_current - mu * (z_current - x)
 
 ### 2.2 前向模型梯度 ILC
 
-`ForwardModelILCRuntime` 注册名为 `forward_model_ilc`，每步在更新前先拟合 PA 前向模型并把误差经模型 Jacobian 伴随（反向传播）折算回 PA 输入位置：
+`ForwardModelILCRuntime` 注册名为 `forward_model_ilc`，每步在更新前先拟合 PA 前向模型并把误差经模型 Jacobian 伴随（反向传播）折算回 PA 输入位置。基函数为广义记忆多项式（GMP），含对齐项与失配准交叉项：
 
 ```text
-basis_k[n]  = y[n-m_k] * |y[n-m_k]|**(p_k-1)            (periodic roll boundary)
-z_model     = argmin_c ||sum_k c_k basis_k - z||^2       (complex LS, see below)
-A-weight_k  = (p_k+1)/2 * |y|**(p_k-1)                   (d/dy part of basis_k)
-B-weight_k  = (p_k-1)/2 * conj(y)^2 * |y|**(p_k-3)       (d/dy* part of basis_k)
-g           = sum_k conj(c_k)*A-weight_k*roll(e,-m_k) + c_k*conj(B-weight_k*roll(e,-m_k))
-y_candidate = y_current - mu * g
+aligned_k[n] = y[n-m_k] * |y[n-m_k]|**(p_k-1)                     (m_k in memory_depths)
+cross_k[n]   = y[n-m_k] * |y[n-m_k-l_k]|**(q_k-1)                 (q_k in cross_orders, l_k in cross_envelope_lags)
+z_model      = argmin_c ||sum_k c_k basis_k - z||^2               (complex LS, see below)
+g[j]         = sum_k conj(c_k)*(dBasis_k/dy_j)*e[n] + c_k*(dBasis_k/dy_j*)*conj(e[n])
+y_candidate  = y_current - mu * g
 ```
+
+对齐项只依赖一个输入样点，其两个导数权值为：
+
+```text
+A-weight_k = (p_k+1)/2 * |y|**(p_k-1)                   (d/dy part)
+B-weight_k = (p_k-1)/2 * conj(y)^2 * |y|**(p_k-3)       (d/dy* part)
+```
+
+交叉项依赖两个输入样点（信号样点 `n-m` 与包络样点 `n-m-l`），伴随把每个输出误差同时散射回两条路径：信号路径权值 `|y[n-m-l]|**(q-1)`（对该样点全纯），包络路径按 `d|u|**(q-1)/du` 与 `d/d(u*)` 计算并落到 `n-m-l`。两条路径在 `l -> 0` 时退化为对齐权值，该一致性由有限差分测试覆盖。
 
 要点：
 
 - 拟合只用当前轮 `(y_current, z_current)`，不跨轮累积；`z` 是已对齐反馈，因此线性系数自然吸收衰减、反馈增益/相位和残余对齐等复合线性路径，无需显式建模。
 - LS 采用列 RMS 归一化 + 相对岭正则（`ridge * N` 加在归一化 Gram 对角）的正规方程，`numpy.linalg.solve` 求解；Gram 与右端分块累积（每块约 800 万基样点）以限制长波形的峰值内存。全零列直接赋零系数，病态矩阵回退 `lstsq`。
-- `g` 是 `||F(y) - x||^2` 相对复参数化 `y` 的精确实梯度方向。非全纯映射必须包含共轭项 `conj(B^H e)`：只取 `A^H e` 或误用 `(A+B)^H e` 都会使方向倾斜，深度压缩下足以导致停滞或发散。伴随中 A/B 权重按输入样点 `y[j]` 计算，与输出误差 `e[j+m]` 配对；方向公式已用中心有限差分验证。
-- 模型精度只影响方向，不用于预测输出，因此粗拟合即可。默认基 `{1,3,5} x {0,1,2}` 已覆盖强压缩场景；继续加阶数或深度对默认场景改善小于 `0.1 dB`。
+- `g` 是 `||F(y) - x||^2` 相对复参数化 `y` 的精确实梯度方向。非全纯映射必须包含共轭项 `c_k*(dBasis/dy_j*)*conj(e)`：只取 `A^H e` 或误用 `(A+B)^H e` 都会使方向倾斜，深度压缩下足以导致停滞或发散。方向公式（对齐与交叉路径）均由中心有限差分验证。
+- 默认基为对齐 `{1,3,5,7,9} x {0,1,2}`（15 项）加交叉 `{3,5,7} x {0,1,2} x {1..10}`（90 项），共 105 项。交叉项覆盖真实 PA 的包络记忆动态：在本站 GaN 真机数据上，仅对齐基的拟合残差约 -27 dB（相对反馈 RMS），加入交叉项并提高到 9 阶后降到约 -33 dB。残差越低，梯度型更新在收敛末段的方向偏差越小（停滞底限与残差同量级但无固定换算关系）。
+- 模型精度只影响方向，不用于预测输出，因此粗拟合即可；但"粗拟合即可"仅指过渡段（误差远大于残差时）。误差收敛到残差量级附近后，方向偏差与误差同缩放并成为主导，收敛随之停滞。
 - 收敛稳定边界为 `mu < 2 / lambda_max(J^H J)`，与具体 PA 工作点有关。超出边界时发散是渐进的，不会立即爆炸，但 `mu` 仍应按 PA 严重程度选取。
 
 配置字段（全部严格校验）：
@@ -67,11 +76,13 @@ y_candidate = y_current - mu * g
 | 字段 | 默认 | 约束 |
 | --- | --- | --- |
 | `mu` | `1.0` | 有限正实数 |
-| `orders` | `[1, 3, 5]` | 1..9 的正奇数、严格升序、至多 5 项 |
-| `memory_depths` | `[0, 1, 2]` | 0..16 的整数、严格升序、至多 8 项 |
+| `orders` | `[1, 3, 5, 7, 9]` | 1..9 的正奇数、严格升序、至多 5 项 |
+| `memory_depths` | `[0, 1, 2]` | 0..16 的整数、严格升序、至多 8 项（同时用于对齐深度与交叉信号延迟） |
+| `cross_orders` | `[3, 5, 7]` | 3..9 的正奇数、严格升序、至多 4 项；空列表关闭交叉项 |
+| `cross_envelope_lags` | `[1..10]` | 1..64 的整数、严格升序、至多 16 项；空列表关闭交叉项 |
 | `ridge` | `1e-8` | `[1e-12, 1e-2]` 内有限实数 |
 
-`orders x memory_depths` 至多 16 个基项。指标在基础字段（迭代号、步数、`mu`、误差 RMS、候选 RMS）之外增加梯度 RMS、模型拟合残差 RMS 和逐项拟合系数（`p`、`m`、实部、虚部）。runtime 不做缩放、裁剪或预处理，数字安全边界不变。
+对齐项数 + 交叉项数至多 192 个基项（`orders x memory_depths + cross_orders x memory_depths x cross_envelope_lags`）。指标在基础字段（迭代号、步数、`mu`、误差 RMS、候选 RMS）之外增加梯度 RMS、模型拟合残差 RMS 和逐项拟合系数（`p`、`m`、`lag`、实部、虚部）。runtime 不做缩放、裁剪或预处理，数字安全边界不变。
 
 ## 3. 注册表
 

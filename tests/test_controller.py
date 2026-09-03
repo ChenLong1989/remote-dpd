@@ -311,8 +311,10 @@ class ClosedLoopControllerTests(unittest.TestCase):
             "basic_ilc": {"mu": 0.5},
             "forward_model_ilc": {
                 "mu": 1.0,
-                "orders": (1, 3, 5),
+                "orders": (1, 3, 5, 7, 9),
                 "memory_depths": (0, 1, 2),
+                "cross_orders": (3, 5, 7),
+                "cross_envelope_lags": tuple(range(1, 11)),
                 "ridge": 1e-8,
             },
         }
@@ -334,10 +336,19 @@ class ClosedLoopControllerTests(unittest.TestCase):
                 json.dumps(payload, allow_nan=False)
                 self.assertEqual(payload["runtime_config"]["mu"], expected["mu"])
                 if runtime_name == "forward_model_ilc":
-                    self.assertEqual(payload["runtime_config"]["orders"], [1, 3, 5])
+                    self.assertEqual(
+                        payload["runtime_config"]["orders"], [1, 3, 5, 7, 9]
+                    )
                     self.assertEqual(
                         payload["runtime_config"]["memory_depths"],
                         [0, 1, 2],
+                    )
+                    self.assertEqual(
+                        payload["runtime_config"]["cross_orders"], [3, 5, 7]
+                    )
+                    self.assertEqual(
+                        payload["runtime_config"]["cross_envelope_lags"],
+                        list(range(1, 11)),
                     )
                     self.assertEqual(payload["runtime_config"]["ridge"], 1e-8)
                 # The caller's original mapping must stay untouched.

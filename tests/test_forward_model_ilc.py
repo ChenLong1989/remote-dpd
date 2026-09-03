@@ -32,6 +32,17 @@ def memory_polynomial(signal, coefficients):
     return output
 
 
+def gmp_polynomial(signal, coefficients):
+    """Generalized memory polynomial: (order, memory, envelope_lag, value)."""
+
+    output = np.zeros_like(signal)
+    for order, memory, lag, value in coefficients:
+        delayed = np.roll(signal, memory)
+        envelope = np.roll(signal, memory + lag)
+        output += value * delayed * np.abs(envelope) ** (order - 1)
+    return output
+
+
 def band_limited_reference(rng, size, rms, papr_db=8.0):
     """Band-limited Gaussian reference with magnitude-clipped OFDM-like PAPR.
 
@@ -89,17 +100,21 @@ class ForwardModelGradientTests(unittest.TestCase):
         size = 96
         y = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 0.3
         x = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 0.25
+        # (order, memory, envelope_lag, value): aligned and GMP cross terms.
         coefficients = (
-            (1, 0, 1.0 + 0.1j),
-            (1, 1, 0.3 - 0.2j),
-            (3, 0, -0.8 + 0.3j),
-            (3, 2, 0.4 - 0.2j),
-            (5, 1, 0.2 + 0.4j),
+            (1, 0, 0, 1.0 + 0.1j),
+            (1, 1, 0, 0.3 - 0.2j),
+            (3, 0, 0, -0.8 + 0.3j),
+            (3, 2, 0, 0.4 - 0.2j),
+            (5, 1, 0, 0.2 + 0.4j),
+            (3, 1, 2, 0.5 - 0.2j),
+            (5, 0, 4, 0.3 + 0.15j),
+            (7, 2, 1, -0.2 + 0.25j),
         )
-        error = memory_polynomial(y, coefficients) - x
+        error = gmp_polynomial(y, coefficients) - x
 
         def energy(perturbed):
-            residual = memory_polynomial(perturbed, coefficients) - x
+            residual = gmp_polynomial(perturbed, coefficients) - x
             return float(np.sum(np.abs(residual) ** 2))
 
         epsilon = 1e-5
@@ -117,8 +132,11 @@ class ForwardModelGradientTests(unittest.TestCase):
         from remote_dpd.runtime import _adjoint_gradient, _BasisTerm, _ForwardModelFit
 
         fit = _ForwardModelFit(
-            terms=tuple(_BasisTerm(order, memory) for order, memory, _ in coefficients),
-            coefficients=np.asarray([value for _, _, value in coefficients]),
+            terms=tuple(
+                _BasisTerm(order, memory, lag)
+                for order, memory, lag, _ in coefficients
+            ),
+            coefficients=np.asarray([value for _, _, _, value in coefficients]),
             residual_rms=0.0,
         )
         gradient = _adjoint_gradient(y, error, fit)
@@ -140,7 +158,12 @@ class ForwardModelGradientTests(unittest.TestCase):
         )
         z = memory_polynomial(y, coefficients)
 
-        fit = runtime_module._fit_memory_polynomial(y, z, (1, 3), (0, 1), ridge=1e-10)
+        fit = runtime_module._fit_memory_polynomial(
+            y,
+            z,
+            runtime_module._forward_model_terms((1, 3), (0, 1), (), ()),
+            ridge=1e-10,
+        )
 
         recovered = {
             (term.order, term.memory): value
@@ -149,6 +172,40 @@ class ForwardModelGradientTests(unittest.TestCase):
         for key, value in expected.items():
             np.testing.assert_allclose(recovered[key], value, rtol=1e-6, atol=1e-9)
         self.assertLess(fit.residual_rms, 1e-10)
+
+    def test_fitted_coefficients_recover_known_gmp_cross_terms(self):
+        rng = np.random.default_rng(53)
+        size = 16384
+        y = band_limited_reference(rng, size, 0.2)
+        expected = {
+            (1, 0, 0): 0.9 + 0.1j,
+            (3, 0, 0): -1.1 + 0.4j,
+            (3, 1, 2): 0.6 - 0.3j,
+            (5, 0, 4): 0.4 + 0.2j,
+            (5, 2, 1): -0.3 + 0.15j,
+        }
+        coefficients = tuple(
+            (order, memory, lag, value)
+            for (order, memory, lag), value in expected.items()
+        )
+        z = gmp_polynomial(y, coefficients)
+
+        fit = runtime_module._fit_memory_polynomial(
+            y,
+            z,
+            runtime_module._forward_model_terms((1, 3, 5), (0, 1, 2), (3, 5), (1, 2, 4)),
+            ridge=1e-10,
+        )
+
+        recovered = {
+            (term.order, term.memory, term.envelope_lag): value
+            for term, value in zip(fit.terms, fit.coefficients)
+        }
+        for key, value in expected.items():
+            np.testing.assert_allclose(recovered[key], value, rtol=1e-5, atol=1e-8)
+        # Cross terms raise the Gram condition number, so the achievable
+        # residual sits slightly above the aligned-only noise floor.
+        self.assertLess(fit.residual_rms, 5e-9)
 
     def test_fit_absorbs_linear_gain_phase_and_residual_rms_matches(self):
         rng = np.random.default_rng(31)
@@ -160,7 +217,10 @@ class ForwardModelGradientTests(unittest.TestCase):
         noisy = z + noise
 
         fit = runtime_module._fit_memory_polynomial(
-            y, noisy, (1, 3, 5), (0, 1, 2), ridge=1e-8
+            y,
+            noisy,
+            runtime_module._forward_model_terms((1, 3, 5), (0, 1, 2), (), ()),
+            ridge=1e-8,
         )
 
         recovered = {
@@ -186,17 +246,22 @@ class ForwardModelGradientTests(unittest.TestCase):
         size = 5000
         y = band_limited_reference(rng, size, 0.2)
         z = severe_simulated_pa(y)
-
-        single = runtime_module._fit_memory_polynomial(
-            y, z, (1, 3, 5), (0, 1, 2), ridge=1e-8
+        terms = runtime_module._forward_model_terms(
+            (1, 3, 5), (0, 1, 2), (3, 5), (1, 2)
         )
-        with mock.patch.object(runtime_module, "_FORWARD_MODEL_BLOCK_TERMS", 9 * 997):
-            blocked = runtime_module._fit_memory_polynomial(
-                y, z, (1, 3, 5), (0, 1, 2), ridge=1e-8
-            )
 
+        single = runtime_module._fit_memory_polynomial(y, z, terms, ridge=1e-8)
+        with mock.patch.object(
+            runtime_module, "_FORWARD_MODEL_BLOCK_TERMS", len(terms) * 997
+        ):
+            blocked = runtime_module._fit_memory_polynomial(y, z, terms, ridge=1e-8)
+
+        # Cross terms make the Gram noticeably more ill-conditioned, so the
+        # blockwise summation order shifts the solve by a few units in the
+        # sixth significant digit; a genuine accumulation bug would show up
+        # at a far larger scale.
         np.testing.assert_allclose(
-            single.coefficients, blocked.coefficients, rtol=1e-9, atol=1e-12
+            single.coefficients, blocked.coefficients, rtol=1e-4, atol=1e-9
         )
         # Near-exact fits leave only floating-point cancellation noise, so the
         # residual is compared against an absolute bound rather than between runs.
@@ -209,6 +274,15 @@ class ForwardModelGradientTests(unittest.TestCase):
         column = runtime_module._basis_column(y, runtime_module._BasisTerm(3, 2))
         expected = np.zeros(8, dtype=np.complex128)
         expected[2] = (0.5 + 0.1j) * np.abs(0.5 + 0.1j) ** 2
+        np.testing.assert_allclose(column, expected)
+
+    def test_periodic_cross_term_uses_circular_roll(self):
+        y = np.zeros(8, dtype=np.complex128)
+        y[0] = 0.5 + 0.1j
+        y[2] = 0.3 - 0.2j
+        column = runtime_module._basis_column(y, runtime_module._BasisTerm(3, 1, 2))
+        expected = np.zeros(8, dtype=np.complex128)
+        expected[3] = (0.3 - 0.2j) * np.abs(0.5 + 0.1j) ** 2
         np.testing.assert_allclose(column, expected)
 
     def test_zero_input_produces_zero_gradient_and_identity_candidate(self):
@@ -279,6 +353,46 @@ class ForwardModelConvergenceTests(unittest.TestCase):
         self.assertLess(history[-1], history[0] - 10.0)
         self.assertLess(np.max(np.abs(final_y)), 0.75)
 
+    def test_converges_on_gmp_plant_with_envelope_memory(self):
+        """Cross terms must both fit the plant and steer the gradient.
+
+        The plant carries misaligned envelope memory on top of compression
+        strong enough to diverge the classic identity-Jacobian update; the
+        GMP basis must converge, and disabling the cross terms must leave the
+        loop strictly worse on the same plant.
+        """
+        rng = np.random.default_rng(17)
+        size = 8192
+        reference = band_limited_reference(rng, size, 10.0 ** (-15 / 20), papr_db=7.0)
+        gmp_terms = (
+            (1, 0, 0, 1.0 + 0.0j),
+            (1, 1, 0, 0.05 + 0.02j),
+            (3, 0, 0, -1.0 + 0.25j),
+            (3, 0, 3, 0.35 - 0.2j),
+            (3, 0, 6, -0.25 + 0.12j),
+            (5, 0, 4, 0.2 + 0.08j),
+        )
+
+        def pa(signal):
+            return gmp_polynomial(signal * ATTENUATION, gmp_terms)
+
+        history, _ = run_iterations("forward_model_ilc", {"mu": 1.0}, reference, pa, 15)
+        aligned_only, _ = run_iterations(
+            "forward_model_ilc",
+            {"mu": 1.0, "cross_orders": [], "cross_envelope_lags": []},
+            reference,
+            pa,
+            15,
+        )
+
+        self.assertTrue(
+            np.all(np.diff(history) <= 0.02),
+            f"NMSE history must be non-increasing, got {np.round(history, 3)}",
+        )
+        self.assertLess(history[-1], history[0] - 10.0)
+        self.assertLess(history[-1], -30.0)
+        self.assertLess(history[-1], aligned_only[-1])
+
 
 class ForwardModelContractTests(unittest.TestCase):
     def make_runtime(self, config):
@@ -303,8 +417,10 @@ class ForwardModelContractTests(unittest.TestCase):
     def test_default_config_matches_documented_values(self):
         prepared = ForwardModelILCRuntime()._prepare_config({})
         self.assertEqual(prepared["mu"], 1.0)
-        self.assertEqual(prepared["orders"], (1, 3, 5))
+        self.assertEqual(prepared["orders"], (1, 3, 5, 7, 9))
         self.assertEqual(prepared["memory_depths"], (0, 1, 2))
+        self.assertEqual(prepared["cross_orders"], (3, 5, 7))
+        self.assertEqual(prepared["cross_envelope_lags"], tuple(range(1, 11)))
         self.assertEqual(prepared["ridge"], 1e-8)
 
     def test_metrics_are_finite_and_report_model(self):
@@ -320,10 +436,12 @@ class ForwardModelContractTests(unittest.TestCase):
             return value
 
         json.dumps(unwrap(dict(metrics)), allow_nan=False)
-        self.assertEqual(len(metrics["model_terms"]), 9)
+        # 5 aligned orders x 3 depths + 3 cross orders x 3 depths x 10 lags.
+        self.assertEqual(len(metrics["model_terms"]), 105)
         for term in metrics["model_terms"]:
             self.assertIn("p", term)
             self.assertIn("m", term)
+            self.assertIn("lag", term)
             self.assertIn("real", term)
             self.assertIn("imag", term)
         self.assertEqual(metrics["mu"], 1.0)
@@ -363,7 +481,8 @@ class ForwardModelContractTests(unittest.TestCase):
             {"memory_depths": (1, 17)},
             {"memory_depths": tuple(range(9))},
             {"memory_depths": 3},
-            {"orders": (1, 3, 5, 7, 9), "memory_depths": (0, 1, 2, 3)},
+            # Aligned 5x8=40 plus default cross 3x8x10=240 exceeds 192 terms.
+            {"orders": (1, 3, 5, 7, 9), "memory_depths": tuple(range(8))},
         ]
         for config in cases:
             with (
@@ -371,6 +490,46 @@ class ForwardModelContractTests(unittest.TestCase):
                 self.assertRaises(RuntimeConfigurationError),
             ):
                 ForwardModelILCRuntime().initialize(config)
+
+    def test_rejects_invalid_cross_term_structure(self):
+        cases = [
+            {"cross_orders": (1, 3)},
+            {"cross_orders": (2,)},
+            {"cross_orders": (5, 3)},
+            {"cross_orders": tuple(range(3, 12, 2))},
+            {"cross_orders": "357"},
+            {"cross_envelope_lags": (0,)},
+            {"cross_envelope_lags": (-1,)},
+            {"cross_envelope_lags": (65,)},
+            {"cross_envelope_lags": (2, 1)},
+            {"cross_envelope_lags": tuple(range(1, 18))},
+            {"cross_envelope_lags": 4},
+            # 5 aligned orders x 4 depths + 4 cross orders x 4 depths x 16
+            # lags = 20 + 256 exceeds the 192-term cap.
+            {
+                "orders": (1, 3, 5, 7, 9),
+                "memory_depths": (0, 1, 2, 3),
+                "cross_orders": (3, 5, 7, 9),
+                "cross_envelope_lags": tuple(range(1, 17)),
+            },
+        ]
+        for config in cases:
+            with (
+                self.subTest(config=config),
+                self.assertRaises(RuntimeConfigurationError),
+            ):
+                ForwardModelILCRuntime().initialize(config)
+
+    def test_empty_cross_lists_restore_aligned_only_behaviour(self):
+        runtime = self.make_runtime(
+            {"orders": [1, 3, 5], "cross_orders": [], "cross_envelope_lags": []}
+        )
+        result = self.step_once(
+            runtime,
+            {"orders": [1, 3, 5], "cross_orders": [], "cross_envelope_lags": []},
+        )
+        self.assertEqual(len(result.metrics["model_terms"]), 9)
+        self.assertTrue(all(term["lag"] == 0 for term in result.metrics["model_terms"]))
 
     def test_rejects_invalid_ridge(self):
         for ridge in (0.0, -1e-8, 1e-2 + 1e-12, float("inf"), True):
@@ -381,21 +540,40 @@ class ForwardModelContractTests(unittest.TestCase):
                 ForwardModelILCRuntime().initialize({"ridge": ridge})
 
     def test_accepts_valid_custom_structure(self):
-        runtime = self.make_runtime(
-            {"mu": 0.5, "orders": [1, 3], "memory_depths": [0, 1, 2, 3], "ridge": 1e-6}
-        )
-        result = self.step_once(
-            runtime,
-            {"mu": 0.5, "orders": [1, 3], "memory_depths": [0, 1, 2, 3], "ridge": 1e-6},
-        )
+        config = {
+            "mu": 0.5,
+            "orders": [1, 3],
+            "memory_depths": [0, 1, 2, 3],
+            "cross_orders": [],
+            "cross_envelope_lags": [],
+            "ridge": 1e-6,
+        }
+        runtime = self.make_runtime(config)
+        result = self.step_once(runtime, config)
         self.assertEqual(len(result.metrics["model_terms"]), 8)
+
+    def test_accepts_valid_custom_cross_structure(self):
+        config = {
+            "mu": 0.5,
+            "orders": [1, 3],
+            "memory_depths": [0, 1],
+            "cross_orders": [3, 5],
+            "cross_envelope_lags": [1, 4, 9],
+        }
+        runtime = self.make_runtime(config)
+        result = self.step_once(runtime, config)
+        # 2 aligned orders x 2 depths + 2 cross orders x 2 depths x 3 lags.
+        self.assertEqual(len(result.metrics["model_terms"]), 4 + 12)
+        cross_terms = [term for term in result.metrics["model_terms"] if term["lag"]]
+        self.assertEqual(len(cross_terms), 12)
 
     def test_step_config_must_match_initialization(self):
         runtime = self.make_runtime({"mu": 0.7})
         with self.assertRaises(RuntimeConfigurationError):
             self.step_once(runtime, {"mu": 0.9})
         # Equivalent list/tuple forms must compare equal after normalization.
-        self.step_once(runtime, {"mu": 0.7, "orders": (1, 3, 5)})
+        self.step_once(runtime, {"mu": 0.7, "cross_orders": (3, 5, 7)})
+        self.step_once(runtime, {"mu": 0.7, "cross_envelope_lags": list(range(1, 11))})
 
     def test_nonfinite_candidate_is_rejected(self):
         runtime = self.make_runtime({})
@@ -535,8 +713,10 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
             recorded,
             {
                 "mu": 1.0,
-                "orders": (1, 3, 5),
+                "orders": (1, 3, 5, 7, 9),
                 "memory_depths": (0, 1, 2),
+                "cross_orders": (3, 5, 7),
+                "cross_envelope_lags": tuple(range(1, 11)),
                 "ridge": 1e-8,
             },
         )

@@ -243,14 +243,19 @@ class BasicILCRuntime(DPDRuntime):
         )
 
 
-_FORWARD_MODEL_DEFAULT_ORDERS: tuple[int, ...] = (1, 3, 5)
+_FORWARD_MODEL_DEFAULT_ORDERS: tuple[int, ...] = (1, 3, 5, 7, 9)
 _FORWARD_MODEL_DEFAULT_MEMORY_DEPTHS: tuple[int, ...] = (0, 1, 2)
+_FORWARD_MODEL_DEFAULT_CROSS_ORDERS: tuple[int, ...] = (3, 5, 7)
+_FORWARD_MODEL_DEFAULT_CROSS_ENVELOPE_LAG: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 _FORWARD_MODEL_DEFAULT_RIDGE = 1e-8
 _FORWARD_MODEL_MAX_ORDER = 9
 _FORWARD_MODEL_MAX_MEMORY_DEPTH = 16
 _FORWARD_MODEL_MAX_ORDERS = 5
 _FORWARD_MODEL_MAX_MEMORY_DEPTHS = 8
-_FORWARD_MODEL_MAX_BASIS_TERMS = 16
+_FORWARD_MODEL_MAX_CROSS_ORDERS = 4
+_FORWARD_MODEL_MAX_CROSS_ENVELOPE_LAGS = 16
+_FORWARD_MODEL_MAX_CROSS_ENVELOPE_LAG = 64
+_FORWARD_MODEL_MAX_BASIS_TERMS = 192
 _FORWARD_MODEL_RIDGE_MIN = 1e-12
 _FORWARD_MODEL_RIDGE_MAX = 1e-2
 # Upper bound on basis samples held at once while fitting, so the memory cost
@@ -260,10 +265,16 @@ _FORWARD_MODEL_BLOCK_TERMS = 8_000_000
 
 @dataclass(frozen=True, slots=True)
 class _BasisTerm:
-    """One memory-polynomial basis term: y[n-m] * |y[n-m]|**(order-1)."""
+    """One generalized memory-polynomial basis term.
+
+    ``envelope_lag`` zero selects the aligned term
+    ``y[n-m] * |y[n-m]|**(order-1)``; a positive lag selects the GMP
+    misaligned cross term ``y[n-m] * |y[n-m-lag]|**(order-1)``.
+    """
 
     order: int
     memory: int
+    envelope_lag: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +290,10 @@ def _basis_column(signal: np.ndarray, term: _BasisTerm) -> np.ndarray:
     """Full-signal periodic basis column for one term."""
 
     delayed = np.roll(signal, term.memory)
-    return delayed * np.abs(delayed) ** (term.order - 1)
+    if term.envelope_lag == 0:
+        return delayed * np.abs(delayed) ** (term.order - 1)
+    envelope = np.roll(signal, term.memory + term.envelope_lag)
+    return delayed * np.abs(envelope) ** (term.order - 1)
 
 
 def _basis_column_block(
@@ -290,9 +304,12 @@ def _basis_column_block(
 ) -> np.ndarray:
     """Basis column restricted to [start, stop) with whole-signal periodicity."""
 
-    indices = (np.arange(start, stop) - term.memory) % signal.size
-    delayed = signal[indices]
-    return delayed * np.abs(delayed) ** (term.order - 1)
+    indices = np.arange(start, stop) - term.memory
+    delayed = signal[indices % signal.size]
+    if term.envelope_lag == 0:
+        return delayed * np.abs(delayed) ** (term.order - 1)
+    envelope = signal[(indices - term.envelope_lag) % signal.size]
+    return delayed * np.abs(envelope) ** (term.order - 1)
 
 
 def _validate_integer_list(
@@ -303,11 +320,14 @@ def _validate_integer_list(
     minimum: int,
     maximum: int,
     odd_only: bool,
+    allow_empty: bool = False,
 ) -> tuple[int, ...]:
     """Validate a strictly ascending bounded integer list."""
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         raise RuntimeConfigurationError(f"{name} must be a list of integers")
     if not value:
+        if allow_empty:
+            return ()
         raise RuntimeConfigurationError(f"{name} must contain at least one entry")
     if len(value) > max_items:
         raise RuntimeConfigurationError(
@@ -335,11 +355,33 @@ def _validate_integer_list(
     return tuple(normalized)
 
 
+def _forward_model_terms(
+    orders: tuple[int, ...],
+    memory_depths: tuple[int, ...],
+    cross_orders: tuple[int, ...],
+    cross_envelope_lags: tuple[int, ...],
+) -> tuple[_BasisTerm, ...]:
+    """Build aligned plus misaligned GMP basis terms in a deterministic order."""
+
+    return (
+        tuple(
+            _BasisTerm(order, order_memory, 0)
+            for order in orders
+            for order_memory in memory_depths
+        )
+        + tuple(
+            _BasisTerm(order, order_memory, lag)
+            for order in cross_orders
+            for order_memory in memory_depths
+            for lag in cross_envelope_lags
+        )
+    )
+
+
 def _fit_memory_polynomial(
     y: np.ndarray,
     z: np.ndarray,
-    orders: tuple[int, ...],
-    memory_depths: tuple[int, ...],
+    terms: tuple[_BasisTerm, ...],
     ridge: float,
 ) -> _ForwardModelFit:
     """Fit z ~ sum c_k * basis_k(y) by ridge-regularized complex least squares.
@@ -349,11 +391,6 @@ def _fit_memory_polynomial(
     blockwise to bound peak memory for long waveforms. All-zero columns are
     dropped with a zero coefficient instead of dividing by a zero scale.
     """
-    terms = tuple(
-        _BasisTerm(order, order_memory)
-        for order in orders
-        for order_memory in memory_depths
-    )
     count = len(terms)
     total = y.size
     gram = np.zeros((count, count), dtype=np.complex128)
@@ -418,6 +455,12 @@ def _adjoint_gradient(
     A^H e + conj(B^H e), where A = dF/dy and B = dF/dy*. Both parts are
     required: dropping the conjugated B term tilts the direction enough to
     stall convergence for deeply compressed amplifiers.
+
+    Each basis term contributes through every input sample it depends on:
+    conj(c) * (dBasis/dy_j) * e + c * (dBasis/dy_j*) * conj(e). Aligned terms
+    depend on one sample; GMP cross terms y[n-m]*|y[n-m-l]|**(p-1) depend on
+    two, so they scatter the error back along both the signal path (index
+    n-m) and the envelope path (index n-m-l).
     """
     gradient = np.zeros_like(y)
     magnitude = np.abs(y)
@@ -426,14 +469,36 @@ def _adjoint_gradient(
         if coefficient == 0.0:
             continue
         order = term.order
-        # The derivative weight at input index j uses y[j] itself; the error
-        # it pairs with sits at output index j + memory.
-        shifted_error = np.roll(error, -term.memory)
-        a_weight = (order + 1) / 2.0 * magnitude ** (order - 1)
-        gradient += np.conj(coefficient) * a_weight * shifted_error
-        if order > 1:
-            b_weight = (order - 1) / 2.0 * conjugate_squared * magnitude ** (order - 3)
-            gradient += coefficient * np.conj(b_weight * shifted_error)
+        if term.envelope_lag == 0:
+            # The derivative weight at input index j uses y[j] itself; the error
+            # it pairs with sits at output index j + memory.
+            shifted_error = np.roll(error, -term.memory)
+            a_weight = (order + 1) / 2.0 * magnitude ** (order - 1)
+            gradient += np.conj(coefficient) * a_weight * shifted_error
+            if order > 1:
+                b_weight = (
+                    (order - 1) / 2.0 * conjugate_squared * magnitude ** (order - 3)
+                )
+                gradient += coefficient * np.conj(b_weight * shifted_error)
+            continue
+        # Cross term: signal sample at output index n is y[n-m], envelope
+        # sample is y[n-m-lag]; both receive a share of the error at n.
+        signal_sample = np.roll(y, term.memory)
+        envelope_sample = np.roll(y, term.memory + term.envelope_lag)
+        # Signal path is holomorphic in y[n-m]: d/dy of y[n-m] is 1.
+        signal_weight = np.abs(envelope_sample) ** (order - 1)
+        gradient += np.conj(coefficient) * np.roll(signal_weight * error, -term.memory)
+        # Envelope path: d|u|**(p-1)/du and d/d(u*) with u = y[n-m-lag].
+        envelope_factor = (order - 1) / 2.0 * np.abs(envelope_sample) ** (order - 3)
+        envelope_path = (
+            np.conj(coefficient)
+            * np.conj(signal_sample)
+            * envelope_sample
+            * envelope_factor
+            * error
+            + coefficient * signal_sample * envelope_sample * envelope_factor * np.conj(error)
+        )
+        gradient += np.roll(envelope_path, -(term.memory + term.envelope_lag))
     return gradient
 
 
@@ -444,10 +509,18 @@ class ForwardModelILCRuntime(DPDRuntime):
     propagates the feedback error to the PA input unchanged. Under deep gain
     compression that direction is wrong (the local slope approaches zero and
     can turn negative), which slows convergence and eventually diverges. This
-    runtime first fits a complex memory-polynomial forward model on the current
-    (y, z) pair with a plain least-squares solve, then back-propagates the
-    error through the fitted Jacobian and applies the resulting gradient. Model
-    accuracy only shapes the direction, so a coarse fit is sufficient.
+    runtime first fits a complex generalized memory-polynomial forward model
+    on the current (y, z) pair with a plain least-squares solve, then
+    back-propagates the error through the fitted Jacobian and applies the
+    resulting gradient. Model accuracy only shapes the direction, so a coarse
+    fit is sufficient.
+
+    The basis contains aligned terms y[n-m]*|y[n-m]|**(p-1) plus GMP
+    misaligned cross terms y[n-m]*|y[n-m-l]|**(p-1). The cross terms are what
+    let the fit track real PA envelope memory (bias-network and matching
+    dynamics) that the aligned-only basis cannot express: on the station's
+    GaN bench they lowered the fit residual from about -27 dB to about -33 dB
+    relative to the feedback RMS.
     """
 
     name = "forward_model_ilc"
@@ -457,7 +530,14 @@ class ForwardModelILCRuntime(DPDRuntime):
         self._step_count = 0
 
     def _prepare_config(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
-        unknown = set(config) - {"mu", "orders", "memory_depths", "ridge"}
+        unknown = set(config) - {
+            "mu",
+            "orders",
+            "memory_depths",
+            "cross_orders",
+            "cross_envelope_lags",
+            "ridge",
+        }
         if unknown:
             raise RuntimeConfigurationError(
                 f"unsupported Forward Model ILC config fields: {sorted(unknown)}"
@@ -489,11 +569,33 @@ class ForwardModelILCRuntime(DPDRuntime):
             maximum=_FORWARD_MODEL_MAX_MEMORY_DEPTH,
             odd_only=False,
         )
-        if len(orders_tuple) * len(memory_tuple) > _FORWARD_MODEL_MAX_BASIS_TERMS:
+        cross_orders_tuple = _validate_integer_list(
+            "cross_orders",
+            config.get("cross_orders", _FORWARD_MODEL_DEFAULT_CROSS_ORDERS),
+            max_items=_FORWARD_MODEL_MAX_CROSS_ORDERS,
+            minimum=3,
+            maximum=_FORWARD_MODEL_MAX_ORDER,
+            odd_only=True,
+            allow_empty=True,
+        )
+        cross_lags_tuple = _validate_integer_list(
+            "cross_envelope_lags",
+            config.get(
+                "cross_envelope_lags", _FORWARD_MODEL_DEFAULT_CROSS_ENVELOPE_LAG
+            ),
+            max_items=_FORWARD_MODEL_MAX_CROSS_ENVELOPE_LAGS,
+            minimum=1,
+            maximum=_FORWARD_MODEL_MAX_CROSS_ENVELOPE_LAG,
+            odd_only=False,
+            allow_empty=True,
+        )
+        basis_terms = len(orders_tuple) * len(memory_tuple) + len(
+            cross_orders_tuple
+        ) * len(memory_tuple) * len(cross_lags_tuple)
+        if basis_terms > _FORWARD_MODEL_MAX_BASIS_TERMS:
             raise RuntimeConfigurationError(
-                "orders x memory_depths must produce at most "
-                f"{_FORWARD_MODEL_MAX_BASIS_TERMS} basis terms; "
-                f"got {len(orders_tuple) * len(memory_tuple)}"
+                "aligned plus cross terms must produce at most "
+                f"{_FORWARD_MODEL_MAX_BASIS_TERMS} basis terms; got {basis_terms}"
             )
 
         ridge = config.get("ridge", _FORWARD_MODEL_DEFAULT_RIDGE)
@@ -511,6 +613,8 @@ class ForwardModelILCRuntime(DPDRuntime):
             "mu": mu,
             "orders": orders_tuple,
             "memory_depths": memory_tuple,
+            "cross_orders": cross_orders_tuple,
+            "cross_envelope_lags": cross_lags_tuple,
             "ridge": ridge,
         }
 
@@ -526,15 +630,17 @@ class ForwardModelILCRuntime(DPDRuntime):
         config: Mapping[str, Any],
     ) -> RuntimeStepResult:
         mu = float(config["mu"])
-        orders = tuple(int(value) for value in config["orders"])
-        memory_depths = tuple(int(value) for value in config["memory_depths"])
+        terms = _forward_model_terms(
+            tuple(int(value) for value in config["orders"]),
+            tuple(int(value) for value in config["memory_depths"]),
+            tuple(int(value) for value in config["cross_orders"]),
+            tuple(int(value) for value in config["cross_envelope_lags"]),
+        )
         ridge = float(config["ridge"])
         y = step_input.y_current
         error = step_input.z_current - step_input.x
         with np.errstate(over="ignore", invalid="ignore"):
-            fit = _fit_memory_polynomial(
-                y, step_input.z_current, orders, memory_depths, ridge
-            )
+            fit = _fit_memory_polynomial(y, step_input.z_current, terms, ridge)
             gradient = _adjoint_gradient(y, error, fit)
             candidate = y - mu * gradient
         if not np.all(np.isfinite(candidate)):
@@ -557,6 +663,7 @@ class ForwardModelILCRuntime(DPDRuntime):
                     {
                         "p": term.order,
                         "m": term.memory,
+                        "lag": term.envelope_lag,
                         "real": float(coefficient.real),
                         "imag": float(coefficient.imag),
                     }
