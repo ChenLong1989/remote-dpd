@@ -421,7 +421,7 @@ class ForwardModelContractTests(unittest.TestCase):
         self.assertEqual(prepared["memory_depths"], (0, 1, 2))
         self.assertEqual(prepared["cross_orders"], (3, 5, 7))
         self.assertEqual(prepared["cross_envelope_lags"], tuple(range(1, 11)))
-        self.assertEqual(prepared["ridge"], 1e-8)
+        self.assertEqual(prepared["ridge"], 1e-5)
 
     def test_metrics_are_finite_and_report_model(self):
         runtime = self.make_runtime(None)
@@ -717,7 +717,7 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
                 "memory_depths": (0, 1, 2),
                 "cross_orders": (3, 5, 7),
                 "cross_envelope_lags": tuple(range(1, 11)),
-                "ridge": 1e-8,
+                "ridge": 1e-5,
             },
         )
         json.dumps(result.config.to_dict(), allow_nan=False)

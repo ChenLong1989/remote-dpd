@@ -247,7 +247,10 @@ _FORWARD_MODEL_DEFAULT_ORDERS: tuple[int, ...] = (1, 3, 5, 7, 9)
 _FORWARD_MODEL_DEFAULT_MEMORY_DEPTHS: tuple[int, ...] = (0, 1, 2)
 _FORWARD_MODEL_DEFAULT_CROSS_ORDERS: tuple[int, ...] = (3, 5, 7)
 _FORWARD_MODEL_DEFAULT_CROSS_ENVELOPE_LAG: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-_FORWARD_MODEL_DEFAULT_RIDGE = 1e-8
+# Plain Tikhonov lambda on raw coefficients. 1e-5 keeps the GMP residual
+# within ~1 dB of its unregularized floor while suppressing the coefficient
+# blow-up that spiked the gradient at waveform peaks on the real bench.
+_FORWARD_MODEL_DEFAULT_RIDGE = 1e-5
 _FORWARD_MODEL_MAX_ORDER = 9
 _FORWARD_MODEL_MAX_MEMORY_DEPTH = 16
 _FORWARD_MODEL_MAX_ORDERS = 5
@@ -384,12 +387,17 @@ def _fit_memory_polynomial(
     terms: tuple[_BasisTerm, ...],
     ridge: float,
 ) -> _ForwardModelFit:
-    """Fit z ~ sum c_k * basis_k(y) by ridge-regularized complex least squares.
+    """Fit z ~ sum c_k * basis_k(y) by plain Tikhonov-regularized complex LS.
 
-    Columns are RMS-normalized before solving so the relative ridge is
-    scale-invariant; the Gram matrix and right-hand side are accumulated
-    blockwise to bound peak memory for long waveforms. All-zero columns are
-    dropped with a zero coefficient instead of dividing by a zero scale.
+    Solves (A^H A + ridge * I) c = A^H z on the raw basis columns, i.e.
+    minimizes ||A c - z||^2 + ridge * ||c||^2 without column normalization.
+    Penalizing the raw coefficient magnitude matters on the GMP basis: its
+    high-order columns carry little energy, so a plain lambda damps the
+    ill-conditioned high-order directions whose exploding coefficients spike
+    the fitted Jacobian at waveform peaks (real-bench
+    candidate_peak_exceeded, 2026-09-03). The Gram matrix and right-hand
+    side are accumulated blockwise to bound peak memory for long waveforms.
+    All-zero columns are dropped with a zero coefficient.
     """
     count = len(terms)
     total = y.size
@@ -413,25 +421,24 @@ def _fit_memory_polynomial(
                     gram[j, i] += np.conj(value)
 
     # An overflowing basis column must fail closed: silently dropping it
-    # (the scales > 0 filter also drops non-finite energies) would return a
+    # (the energies > 0 filter also drops non-finite energies) would return a
     # finite candidate from a degenerate low-order model.
     if not np.all(np.isfinite(column_energy)) or not math.isfinite(z_energy):
         raise RuntimeInputError(
             "forward model basis overflowed for this input scale"
         )
-    scales = np.sqrt(column_energy / total)
-    active = np.nonzero(scales > 0.0)[0]
+    active = np.nonzero(column_energy > 0.0)[0]
     coefficients = np.zeros(count, dtype=np.complex128)
     if active.size:
         idx = active[:, None], active[None, :]
-        reduced = gram[idx] / (scales[active][:, None] * scales[active][None, :])
-        reduced[np.diag_indices_from(reduced)] += ridge * total
-        reduced_rhs = rhs[active] / scales[active]
+        reduced = gram[idx].copy()
+        reduced[np.diag_indices_from(reduced)] += ridge
         try:
-            normalized = np.linalg.solve(reduced, reduced_rhs)
+            coefficients[active] = np.linalg.solve(reduced, rhs[active])
         except np.linalg.LinAlgError:
-            normalized = np.linalg.lstsq(reduced, reduced_rhs, rcond=None)[0]
-        coefficients[active] = normalized / scales[active]
+            coefficients[active] = np.linalg.lstsq(
+                reduced, rhs[active], rcond=None
+            )[0]
 
     model_energy = float(np.vdot(coefficients, gram @ coefficients).real)
     cross_energy = 2.0 * float(np.vdot(coefficients, rhs).real)

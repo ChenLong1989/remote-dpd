@@ -315,7 +315,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
                 "memory_depths": (0, 1, 2),
                 "cross_orders": (3, 5, 7),
                 "cross_envelope_lags": tuple(range(1, 11)),
-                "ridge": 1e-8,
+                "ridge": 1e-5,
             },
         }
         for runtime_name, expected in expected_configs.items():
@@ -350,7 +350,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
                         payload["runtime_config"]["cross_envelope_lags"],
                         list(range(1, 11)),
                     )
-                    self.assertEqual(payload["runtime_config"]["ridge"], 1e-8)
+                    self.assertEqual(payload["runtime_config"]["ridge"], 1e-5)
                 # The caller's original mapping must stay untouched.
                 self.assertEqual(dict(config.runtime_config), {})
 
