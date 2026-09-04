@@ -311,9 +311,10 @@ class ClosedLoopControllerTests(unittest.TestCase):
             "basic_ilc": {"mu": 0.5},
             "forward_model_ilc": {
                 "mu": 1.0,
-                "orders": (1, 3, 5),
-                "memory_depths": (0, 1, 2),
+                "tap_count": 3,
+                "lut_size": 32,
                 "ridge": 1e-8,
+                "lut_ridge": 1e-3,
             },
         }
         for runtime_name, expected in expected_configs.items():
@@ -334,12 +335,10 @@ class ClosedLoopControllerTests(unittest.TestCase):
                 json.dumps(payload, allow_nan=False)
                 self.assertEqual(payload["runtime_config"]["mu"], expected["mu"])
                 if runtime_name == "forward_model_ilc":
-                    self.assertEqual(payload["runtime_config"]["orders"], [1, 3, 5])
-                    self.assertEqual(
-                        payload["runtime_config"]["memory_depths"],
-                        [0, 1, 2],
-                    )
+                    self.assertEqual(payload["runtime_config"]["tap_count"], 3)
+                    self.assertEqual(payload["runtime_config"]["lut_size"], 32)
                     self.assertEqual(payload["runtime_config"]["ridge"], 1e-8)
+                    self.assertEqual(payload["runtime_config"]["lut_ridge"], 1e-3)
                 # The caller's original mapping must stay untouched.
                 self.assertEqual(dict(config.runtime_config), {})
 
