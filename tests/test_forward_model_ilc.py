@@ -5,6 +5,7 @@ from unittest import mock
 
 import numpy as np
 
+from remote_dpd import runtime as runtime_module
 from remote_dpd.forward_model import (
     TAP_COUNTS,
     FLFResidualModel,
@@ -314,6 +315,16 @@ class ForwardModelRuntimeTests(unittest.TestCase):
 
 
 class ForwardModelConvergenceTests(unittest.TestCase):
+    def setUp(self):
+        # These tests pin the regular per-iteration refitting behaviour; the
+        # temporary debug freeze (runtime._FORWARD_MODEL_FIT_FREEZE_AFTER_
+        # ITERATION) must stay disabled for them.
+        patcher = mock.patch.object(
+            runtime_module, "_FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION", None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_converges_where_basic_ilc_diverges_on_rotated_loop_gain(self):
         rng = np.random.default_rng(5)
         size = 8192
@@ -516,6 +527,15 @@ class ForwardModelContractTests(unittest.TestCase):
 
 class ForwardModelClosedLoopTests(unittest.TestCase):
     """Controller-level A/B: classic ILC diverges, forward-model ILC converges."""
+
+    def setUp(self):
+        # See ForwardModelConvergenceTests.setUp: keep the debug freeze off.
+        patcher = mock.patch.object(
+            runtime_module, "_FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION", None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
     SEVERE_PA = (
         {"p": 1, "m": 0, "real": 1.0, "imag": 0.0},
