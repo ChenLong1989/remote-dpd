@@ -311,7 +311,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
             "basic_ilc": {"mu": 0.5},
             "forward_model_ilc": {
                 "mu": 1.0,
-                "tap_count": 17,
+                "tap_count": 3,
                 "lut_size": 32,
                 "ridge": 1e-8,
                 "lut_ridge": 1e-3,
@@ -335,7 +335,7 @@ class ClosedLoopControllerTests(unittest.TestCase):
                 json.dumps(payload, allow_nan=False)
                 self.assertEqual(payload["runtime_config"]["mu"], expected["mu"])
                 if runtime_name == "forward_model_ilc":
-                    self.assertEqual(payload["runtime_config"]["tap_count"], 17)
+                    self.assertEqual(payload["runtime_config"]["tap_count"], 3)
                     self.assertEqual(payload["runtime_config"]["lut_size"], 32)
                     self.assertEqual(payload["runtime_config"]["ridge"], 1e-8)
                     self.assertEqual(payload["runtime_config"]["lut_ridge"], 1e-3)

@@ -1,12 +1,14 @@
 """FIR-LUT-FIR (FLF) residual forward model for the forward-model ILC runtime.
 
-The structure is ported from the dpd-compass repository (``models/flf.py``,
-documented in its ``docs/algorithm_design.md`` section 13): a fixed 2x
-polyphase FIR front end, the reference S-matrix memory tap set with its
-nested selection ladder, a piecewise-linear amplitude LUT on a uniform grid,
-and per-phase complex coefficients.  The model is linear in its
-coefficients, so it is written as ``z_hat = y + Phi(y) w`` and fitted by a
-plain blockwise Tikhonov least-squares solve plus a first-difference
+The structure follows the FLF model of the dpd-compass repository
+(``models/flf.py``, documented in its ``docs/algorithm_design.md`` section
+13): a fixed 2x polyphase FIR front end, memory taps paired with a
+piecewise-linear amplitude LUT on a uniform grid, and per-phase complex
+coefficients.  The tap set here is the three diagonal delays
+``(d_x, d_p) in {(-1, -1), (0, 0), (1, 1)}`` instead of the dpd-compass
+reference S-matrix ladder (user decision, 2026-09-04).  The model is linear
+in its coefficients, so it is written as ``z_hat = y + Phi(y) w`` and fitted
+by a plain blockwise Tikhonov least-squares solve plus a first-difference
 penalty on neighbouring LUT knots (see the ridge discussion in
 ``docs/algorithm_runtime_design.md`` section 2.2).
 
@@ -30,69 +32,24 @@ import numpy as np
 
 from remote_dpd.runtime import RuntimeInputError
 
-# Reference S-matrix taps, copied verbatim from dpd-compass models/flf.py
-# (origin: getSMatrixMars(716.5)).  Rows are MATLAB reference rows; the
-# tables are flattened column-major and the two NaN slots are dropped.
-_TAP_X_MATRIX = (
-    (0.0, -0.5, -0.5),
-    (0.0, -0.5, -0.5),
-    (0.0, -0.5, -0.5),
-    (0.0, -0.5, math.nan),
-    (0.0, 0.0, 0.0),
-    (0.0, -0.5, -0.5),
-    (0.0, -0.5, -0.5),
-    (0.0, 0.0, 0.0),
-    (0.0, 0.0, 0.0),
-    (-1.0, -1.0, -1.5),
-    (-2.0, -2.0, -2.5),
-    (-3.0, -3.0, -3.5),
-    (-4.0, -4.0, math.nan),
-    (1.0, 1.0, 0.5),
-    (2.0, 2.0, 1.5),
-    (3.0, 3.0, 2.5),
-)
-_TAP_P_MATRIX = (
-    (0.0, 0.0, -0.5),
-    (1.0, 1.0, 0.5),
-    (2.0, 2.0, 1.5),
-    (3.0, 2.5, math.nan),
-    (4.0, 5.0, 6.0),
-    (-1.0, -1.0, -1.5),
-    (-2.0, -2.0, -2.5),
-    (-3.0, -4.0, -5.0),
-    (-6.0, -7.0, -8.0),
-    (-1.0, -1.5, -1.5),
-    (-2.0, -2.5, -2.5),
-    (-3.0, -3.5, -3.5),
-    (-4.0, -4.5, math.nan),
-    (1.0, 0.5, 0.5),
-    (2.0, 1.5, 1.5),
-    (3.0, 2.5, 2.5),
+# Tap set: three diagonal (signal delay, envelope delay) pairs in internal
+# 2x-rate sample units.  A positive delay looks into the future.
+_TAP_PAIRS = (
+    (-1.0, -1.0),
+    (0.0, 0.0),
+    (1.0, 1.0),
 )
 
-
-def _flatten_reference_taps() -> tuple[tuple[float, float], ...]:
-    pairs: list[tuple[float, float]] = []
-    for col in range(3):
-        for row in range(16):
-            dx = _TAP_X_MATRIX[row][col]
-            dp = _TAP_P_MATRIX[row][col]
-            if not (math.isnan(dx) or math.isnan(dp)):
-                pairs.append((dx, dp))
-    return tuple(pairs)
-
-
-REFERENCE_TAPS = _flatten_reference_taps()
-
-# Nested tap ladder: selection prefix sorted by tap radius then original
-# column-major ordinal.  The selected columns stay in original MATLAB order.
+# Nested tap ladder: selection prefix sorted by tap radius then ordinal, so
+# tap_count 1 selects the aligned tap and tap_count 3 the full set.  The
+# selected columns stay in the declared order.
 _SELECTION_ORDER = tuple(
     sorted(
-        range(len(REFERENCE_TAPS)),
-        key=lambda i: (max(abs(REFERENCE_TAPS[i][0]), abs(REFERENCE_TAPS[i][1])), i),
+        range(len(_TAP_PAIRS)),
+        key=lambda i: (max(abs(_TAP_PAIRS[i][0]), abs(_TAP_PAIRS[i][1])), i),
     )
 )
-TAP_COUNTS = (1, 3, 8, 17, 46)
+TAP_COUNTS = (1, 3)
 
 # Fixed polyphase FIRs (center-aligned, 9 taps, centre index 4).  Phase 0 is
 # the identity on both input and output; phase 1 is the reference lowpass.
@@ -111,11 +68,11 @@ _BLOCK_TERMS = 8_000_000
 
 
 def tap_pairs_for_count(tap_count: int) -> tuple[tuple[float, float], ...]:
-    """Return the selected taps in original MATLAB column-major order."""
+    """Return the selected taps in the declared table order."""
     if tap_count not in TAP_COUNTS:
         raise ValueError(f"tap_count must be one of {TAP_COUNTS}, got {tap_count}")
     selected = set(_SELECTION_ORDER[:tap_count])
-    return tuple(REFERENCE_TAPS[i] for i in range(len(REFERENCE_TAPS)) if i in selected)
+    return tuple(_TAP_PAIRS[i] for i in range(len(_TAP_PAIRS)) if i in selected)
 
 
 def _roll(signal: np.ndarray, shift: int) -> np.ndarray:
@@ -154,7 +111,7 @@ class FLFResidualModel:
     ``2 * (U + T * (Q - 2))``.
     """
 
-    def __init__(self, tap_count: int = 17, lut_size: int = 32) -> None:
+    def __init__(self, tap_count: int = 3, lut_size: int = 32) -> None:
         if isinstance(tap_count, bool) or not isinstance(tap_count, numbers.Integral):
             raise ValueError(f"tap_count must be one of {TAP_COUNTS}, got {tap_count!r}")
         tap_count = int(tap_count)

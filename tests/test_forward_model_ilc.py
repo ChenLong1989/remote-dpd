@@ -6,7 +6,6 @@ from unittest import mock
 import numpy as np
 
 from remote_dpd.forward_model import (
-    REFERENCE_TAPS,
     TAP_COUNTS,
     FLFResidualModel,
     tap_pairs_for_count,
@@ -89,9 +88,10 @@ def severe_simulated_pa(signal):
 
 
 class FLFStructureTests(unittest.TestCase):
-    def test_tap_ladder_matches_reference_counts(self):
-        # Documented dpd-compass ladder: (T, U = |unique(d_x)|) per prefix.
-        expected = {1: (1, 1), 3: (3, 2), 8: (8, 4), 17: (17, 7), 46: (46, 15)}
+    def test_tap_ladder_matches_configured_set(self):
+        # Three diagonal delays: tap_count 1 keeps the aligned tap, 3 the
+        # full set; U = |unique(d_x)|.
+        expected = {1: (1, 1), 3: (3, 3)}
         for tap_count, (taps, linear) in expected.items():
             with self.subTest(tap_count=tap_count):
                 model = FLFResidualModel(tap_count, 32)
@@ -100,7 +100,6 @@ class FLFStructureTests(unittest.TestCase):
                 self.assertEqual(
                     model.n_columns(), 2 * (linear + taps * (32 - 2))
                 )
-        self.assertEqual(len(REFERENCE_TAPS), 46)
 
     def test_tap_selection_is_nested(self):
         selected = set()
@@ -108,8 +107,9 @@ class FLFStructureTests(unittest.TestCase):
             taps = set(tap_pairs_for_count(tap_count))
             self.assertTrue(selected <= taps)
             selected = taps
-        # The full set must equal the reference table.
-        self.assertEqual(tap_pairs_for_count(46), REFERENCE_TAPS)
+        self.assertEqual(
+            tap_pairs_for_count(3), ((-1.0, -1.0), (0.0, 0.0), (1.0, 1.0))
+        )
 
     def test_sparse_lut_weights_match_dense_hats(self):
         rng = np.random.default_rng(3)
@@ -148,7 +148,7 @@ class FLFGradientTests(unittest.TestCase):
     def test_adjoint_matches_central_finite_differences(self):
         rng = np.random.default_rng(11)
         size = 1024
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.3)
         x = band_limited_reference(rng, size, 0.25)
         weights = (rng.normal(size=model.n_columns()) + 1j * rng.normal(size=model.n_columns())) * 0.05
@@ -175,7 +175,7 @@ class FLFGradientTests(unittest.TestCase):
     def test_zero_coefficients_reduce_gradient_to_identity_error(self):
         rng = np.random.default_rng(5)
         size = 512
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.3)
         x = band_limited_reference(rng, size, 0.3)
         error = y - x
@@ -187,7 +187,7 @@ class FLFFitTests(unittest.TestCase):
     def test_fit_recovers_smooth_known_model(self):
         rng = np.random.default_rng(23)
         size = 4096
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.2)
         # Smooth LUT rows (low-frequency along the knot axis) so the
         # difference penalty does not bias the recovery.
@@ -216,7 +216,7 @@ class FLFFitTests(unittest.TestCase):
     def test_fit_residual_tracks_noise_floor(self):
         rng = np.random.default_rng(31)
         size = 4096
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.2)
         z = severe_simulated_pa(y)
         noise = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 2e-3 / np.sqrt(2.0)
@@ -229,7 +229,7 @@ class FLFFitTests(unittest.TestCase):
     def test_blockwise_accumulation_matches_single_block(self):
         rng = np.random.default_rng(47)
         size = 5000
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.2)
         z = severe_simulated_pa(y)
 
@@ -258,7 +258,7 @@ class FLFFitTests(unittest.TestCase):
     def test_identity_passthrough_yields_zero_coefficients(self):
         rng = np.random.default_rng(53)
         size = 2048
-        model = FLFResidualModel(8, 16)
+        model = FLFResidualModel(3, 16)
         y = band_limited_reference(rng, size, 0.2)
 
         fit = model.fit(y, y, ridge=1e-8, lut_ridge=1e-3)
@@ -376,7 +376,7 @@ class ForwardModelContractTests(unittest.TestCase):
     def test_default_config_matches_documented_values(self):
         prepared = ForwardModelILCRuntime()._prepare_config({})
         self.assertEqual(prepared["mu"], 1.0)
-        self.assertEqual(prepared["tap_count"], 17)
+        self.assertEqual(prepared["tap_count"], 3)
         self.assertEqual(prepared["lut_size"], 32)
         self.assertEqual(prepared["ridge"], 1e-8)
         self.assertEqual(prepared["lut_ridge"], 1e-3)
@@ -395,16 +395,16 @@ class ForwardModelContractTests(unittest.TestCase):
 
         json.dumps(unwrap(dict(metrics)), allow_nan=False)
         summary = metrics["model_coefficients"]
-        self.assertEqual(summary["tap_count"], 17)
+        self.assertEqual(summary["tap_count"], 3)
         self.assertEqual(summary["lut_size"], 32)
-        self.assertEqual(summary["columns"], 2 * (7 + 17 * 30))
-        self.assertEqual(len(summary["alpha"]), 14)
+        self.assertEqual(summary["columns"], 2 * (3 + 3 * 30))
+        self.assertEqual(len(summary["alpha"]), 6)
         for entry in summary["alpha"]:
             self.assertIn("phase", entry)
             self.assertIn("delay", entry)
             self.assertIn("real", entry)
             self.assertIn("imag", entry)
-        self.assertEqual(summary["beta_count"], 2 * 17 * 30)
+        self.assertEqual(summary["beta_count"], 2 * 3 * 30)
         self.assertGreaterEqual(summary["beta_rms"], 0.0)
         self.assertGreaterEqual(summary["beta_max"], 0.0)
         self.assertEqual(metrics["mu"], 1.0)
@@ -432,12 +432,14 @@ class ForwardModelContractTests(unittest.TestCase):
 
     def test_rejects_invalid_tap_count_and_lut_size(self):
         cases = [
-            {"tap_count": 2},
             {"tap_count": 0},
-            {"tap_count": 47},
+            {"tap_count": 2},
+            {"tap_count": 8},
+            {"tap_count": 17},
+            {"tap_count": 46},
             {"tap_count": True},
-            {"tap_count": "17"},
-            {"tap_count": 17.0},
+            {"tap_count": "3"},
+            {"tap_count": 3.0},
             {"lut_size": 2},
             {"lut_size": 0},
             {"lut_size": True},
@@ -463,11 +465,11 @@ class ForwardModelContractTests(unittest.TestCase):
                     ForwardModelILCRuntime().initialize({field: value})
 
     def test_accepts_valid_custom_structure(self):
-        config = {"mu": 0.5, "tap_count": 8, "lut_size": 16, "lut_ridge": 1e-4}
+        config = {"mu": 0.5, "tap_count": 1, "lut_size": 16, "lut_ridge": 1e-4}
         runtime = self.make_runtime(config)
         result = self.step_once(runtime, config)
         self.assertEqual(
-            result.metrics["model_coefficients"]["columns"], 2 * (4 + 8 * 14)
+            result.metrics["model_coefficients"]["columns"], 2 * (1 + 1 * 14)
         )
 
     def test_step_config_must_match_initialization(self):
@@ -475,7 +477,7 @@ class ForwardModelContractTests(unittest.TestCase):
         with self.assertRaises(RuntimeConfigurationError):
             self.step_once(runtime, {"mu": 0.9})
         # Equivalent forms must compare equal after normalization.
-        self.step_once(runtime, {"mu": 0.7, "tap_count": 17})
+        self.step_once(runtime, {"mu": 0.7, "tap_count": 3})
 
     def test_nonfinite_candidate_is_rejected(self):
         runtime = self.make_runtime({})
@@ -615,7 +617,7 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
             recorded,
             {
                 "mu": 1.0,
-                "tap_count": 17,
+                "tap_count": 3,
                 "lut_size": 32,
                 "ridge": 1e-8,
                 "lut_ridge": 1e-3,

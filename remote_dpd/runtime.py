@@ -243,7 +243,7 @@ class BasicILCRuntime(DPDRuntime):
         )
 
 
-_FORWARD_MODEL_DEFAULT_TAP_COUNT = 17
+_FORWARD_MODEL_DEFAULT_TAP_COUNT = 3
 _FORWARD_MODEL_DEFAULT_LUT_SIZE = 32
 # Plain Tikhonov floor: the FLF basis is structurally rank-deficient, so the
 # solve always needs a small identity term; the LUT difference penalty is the

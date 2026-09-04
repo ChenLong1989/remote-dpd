@@ -56,7 +56,7 @@ y_candidate = y_current - mu * g
 
 #### 2.2.1 FLF 基（`remote_dpd/forward_model.py`）
 
-基函数是 dpd-compass 仓库 FLF（FIR-LUT-FIR）算法的 numpy 移植（见该仓库 `docs/algorithm_design.md` §13 与 `models/flf.py`）。FLF 对系数线性，因此改写为 `z_hat = y + Phi(y) w` 的线性形式后用块状 Gram 正规方程直接求解（dpd-compass 原实现为梯度下降训练，本项目的 LS 变体即为此构建）。结构：
+基函数是 dpd-compass 仓库 FLF（FIR-LUT-FIR）算法结构的 numpy 移植（见该仓库 `docs/algorithm_design.md` §13 与 `models/flf.py`；polyphase FIR、三角 LUT、系数布局均同源）。tap 集合为三对对角延迟 `(d_x, d_p) ∈ {(-1,-1), (0,0), (1,1)}`（内部 2x 采样率单位，用户决策，替代 dpd-compass 的 46 对参考 S-matrix 阶梯）。FLF 对系数线性，因此改写为 `z_hat = y + Phi(y) w` 的线性形式后用块状 Gram 正规方程直接求解（dpd-compass 原实现为梯度下降训练，本项目的 LS 变体即为此构建）。结构：
 
 ```text
 u[2n]   = y[n]                        # polyphase 0: identity
@@ -69,8 +69,8 @@ q_r[n]  = sum_d alpha[r,d] X_d[n] + sum_t sum_k beta[r,t,k] X_{dx[t]}[n] tau_k(A
 z_hat[n]= y[n] + G0{q_0}[2n] + G1{q_1}[2n+1]     # G0 identity, G1 fixed FIR
 ```
 
-- tap 集合：`getSMatrixMars(716.5)` 参考 46 对 `(d_x, d_p)`（column-major 展开、去 NaN），按半径嵌套前缀选择 `tap_count ∈ {1, 3, 8, 17, 46}`；独立线性族延迟 `D = unique(d_x)`。系数 `w = (alpha(2,U), beta(2,T,Q-2))`，`U = |D|`、`T = tap_count`，总复列数 `K = 2*(U + T*(Q-2))`（默认 17/32 时 K=1034）。
-- 与 dpd-compass 的两处有意差异：序列边缘用周期 `roll`（本项目 ILC 波形为整周期，周期边界精确；dpd-compass 为 zero-pad + 截断）；系数用 LS 直解而非迭代训练。
+- tap 集合：三对对角 `(d_x, d_p) = (-1,-1), (0,0), (1,1)`，嵌套前缀选择 `tap_count ∈ {1, 3}`（1 = 仅对齐 tap）；独立线性族延迟 `D = unique(d_x) = {-1, 0, 1}`。系数 `w = (alpha(2,U), beta(2,T,Q-2))`，`U = |D|`、`T = tap_count`，总复列数 `K = 2*(U + T*(Q-2))`（默认 3/32 时 K=186）。
+- 与 dpd-compass 的差异：tap 集合为三对角延迟（非其 46 对 S-matrix）；序列边缘用周期 `roll`（本项目 ILC 波形为整周期，周期边界精确；dpd-compass 为 zero-pad + 截断）；系数用 LS 直解而非迭代训练。
 - 幅度网格不做数据归一化（忠实 dpd-compass 语义）。本机记录波形峰值 0.52-0.61，位于 Q=32 网格上界 31/32 内余量充足；候选峰值超出网格时该样点 LUT 贡献置零、恒等项兜底（优雅退化）。
 
 #### 2.2.2 LS 求解
@@ -90,12 +90,12 @@ z_hat[n]= y[n] + G0{q_0}[2n] + G1{q_1}[2n+1]     # G0 identity, G1 fixed FIR
 | 字段 | 默认 | 约束 |
 | --- | --- | --- |
 | `mu` | `1.0` | 有限正实数 |
-| `tap_count` | `17` | `{1, 3, 8, 17, 46}` 之一 |
+| `tap_count` | `3` | `{1, 3}` 之一 |
 | `lut_size` | `32` | 整数 `>= 3` |
 | `ridge` | `1e-8` | `[1e-12, 1e-2]` 内有限实数（朴素，防奇异底） |
 | `lut_ridge` | `1e-3` | `[1e-12, 1e-2]` 内有限实数（LUT 差分平滑） |
 
-`tap_count x lut_size` 组合的复列数上限 6144（46/64=5734 可用；更大的组合被拒绝，防止 Gram 内存失控）。默认 17/32 的取舍依据真机数据离线实验（记录于 `current_plan.md` 2026-09-04 节）：it0 残差 -39.2 dB（MP 基 -27.4、GMP-105 -32.8）、种子步梯度尖峰 ~9、mu=1.0 候选峰 0.766、全长拟合 ~35 s；46/32 残差 -41.4 dB 但拟合 ~105 s 超真机每轮周期，留作显式配置。
+`tap_count x lut_size` 组合的复列数上限 6144（更大的组合被拒绝，防止 Gram 内存失控）。17-tap S-matrix 阶梯版本的取舍依据真机数据离线实验（记录于 `current_plan.md` 2026-09-04 节）：it0 残差 -39.2 dB（MP 基 -27.4、GMP-105 -32.8）、种子步梯度尖峰 ~9、mu=1.0 候选峰 0.766、全长拟合 ~35 s；46/32 残差 -41.4 dB 但拟合 ~105 s 超真机每轮周期。现行 3-tap 集合的用户决策与真机回放数据见同节追加记录。
 
 配置字段相对旧版（`orders/memory_depths/ridge`）为**破坏性变更**：旧显式配置会被未知字段检查拒绝；Web/file 快速启动只传 `mu`，不受影响。
 
