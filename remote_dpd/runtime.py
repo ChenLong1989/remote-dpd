@@ -257,13 +257,6 @@ _FORWARD_MODEL_RIDGE_MAX = 1e-2
 _FORWARD_MODEL_MAX_COLUMNS = 6144
 
 
-# TEMPORARY DEBUG BEHAVIOUR (user request, 2026-09-04): after this iteration
-# index the runtime stops re-fitting and reuses the coefficients fitted at
-# the freeze iteration.  Set to None to restore per-iteration fitting.
-# Remove this constant and the freeze branches once the debug run is done.
-_FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION = 5
-
-
 class ForwardModelILCRuntime(DPDRuntime):
     """ILC update whose direction uses a per-iteration fitted PA forward model.
 
@@ -289,7 +282,6 @@ class ForwardModelILCRuntime(DPDRuntime):
     def __init__(self) -> None:
         super().__init__()
         self._step_count = 0
-        self._frozen_coefficients: np.ndarray | None = None
 
     @staticmethod
     def _flf_model(tap_count: int, lut_size: int):
@@ -381,11 +373,9 @@ class ForwardModelILCRuntime(DPDRuntime):
 
     def _on_initialize(self, config: Mapping[str, Any]) -> None:
         self._step_count = 0
-        self._frozen_coefficients = None
 
     def _on_reset(self) -> None:
         self._step_count = 0
-        self._frozen_coefficients = None
 
     def _step(
         self,
@@ -396,37 +386,10 @@ class ForwardModelILCRuntime(DPDRuntime):
         model = self._flf_model(int(config["tap_count"]), int(config["lut_size"]))
         y = step_input.y_current
         error = step_input.z_current - step_input.x
-        frozen = (
-            _FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION is not None
-            and step_input.iteration > _FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION
-            and self._frozen_coefficients is not None
-        )
         with np.errstate(over="ignore", invalid="ignore"):
-            if frozen:
-                # Debug mode: keep the coefficients frozen at the freeze
-                # iteration; features and gradient still use the current y.
-                from remote_dpd.forward_model import FLFModelFit
-
-                prediction = model.evaluate(y, self._frozen_coefficients)
-                residual_rms = float(
-                    np.sqrt(np.mean(np.abs(step_input.z_current - prediction) ** 2))
-                )
-                fit = FLFModelFit(
-                    coefficients=self._frozen_coefficients,
-                    residual_rms=residual_rms,
-                )
-            else:
-                fit = model.fit(
-                    y,
-                    step_input.z_current,
-                    float(config["ridge"]),
-                    float(config["lut_ridge"]),
-                )
-                if (
-                    _FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION is not None
-                    and step_input.iteration <= _FORWARD_MODEL_FIT_FREEZE_AFTER_ITERATION
-                ):
-                    self._frozen_coefficients = fit.coefficients.copy()
+            fit = model.fit(
+                y, step_input.z_current, float(config["ridge"]), float(config["lut_ridge"])
+            )
             gradient = model.adjoint(y, error, fit.coefficients)
             candidate = y - mu * gradient
         if not np.all(np.isfinite(candidate)):
@@ -445,7 +408,6 @@ class ForwardModelILCRuntime(DPDRuntime):
                 "candidate_rms": _rms(candidate),
                 "gradient_rms": _rms(gradient),
                 "model_residual_rms": fit.residual_rms,
-                "model_fit_frozen": bool(frozen),
                 "model_coefficients": _coefficient_summary(model, fit),
             },
         )
