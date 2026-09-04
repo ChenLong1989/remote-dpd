@@ -189,8 +189,8 @@ class WebAPITests(unittest.TestCase):
 
     def test_shell_health_devices_waveforms_and_security_headers(self):
         page = self.client.get("/")
-        styles = self.client.get("/static/styles.css?v=single-screen-7")
-        script = self.client.get("/static/app.js?v=single-screen-7")
+        styles = self.client.get("/static/styles.css?v=single-screen-8")
+        script = self.client.get("/static/app.js?v=single-screen-8")
         health = self.client.get("/api/v1/health")
         devices = self.client.get("/api/v1/devices")
         waveforms = self.client.get("/api/v1/waveforms")
@@ -206,7 +206,7 @@ class WebAPITests(unittest.TestCase):
         self.assertIn('id="expert-dialog"', page.text)
         self.assertIn('id="runs-dialog"', page.text)
         self.assertIn('id="run-confirm-dialog"', page.text)
-        self.assertIn("single-screen-7", page.text)
+        self.assertIn("single-screen-8", page.text)
         self.assertIn('value="target_error" checked', page.text)
         self.assertIn('data-aux-view="aclr"', page.text)
         self.assertIn('id="normalize-reference-rms"', page.text)

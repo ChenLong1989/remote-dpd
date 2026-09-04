@@ -71,6 +71,24 @@ class ControllerStoppedError(ControllerError):
     """An operation ended because a manual stop was requested."""
 
 
+# ILC seed noise defaults: white Gaussian noise added to the reference for the
+# iteration-0 transmit, with the noise power inside the integration band set
+# relative to the total carrier (reference) power.
+SEED_NOISE_DEFAULT_ENABLED = True
+SEED_NOISE_DEFAULT_PSD_DB = -25.0
+SEED_NOISE_DEFAULT_BANDWIDTH_HZ = 1e6
+SEED_NOISE_DEFAULT_SEED = 0
+SEED_NOISE_MIN_PSD_DB = -100.0
+SEED_NOISE_MAX_PSD_DB = 20.0
+SEED_NOISE_MAX_BANDWIDTH_HZ = 1e9
+SEED_NOISE_MAX_SEED = 2**63 - 1
+
+# Physical ceiling on the resulting noise-to-carrier power ratio; a valid PSD
+# combined with an extreme sample-rate/bandwidth pair must still produce a
+# usable waveform instead of overflowing the digital envelope.
+SEED_NOISE_MAX_NOISE_TO_CARRIER_DB = 40.0
+
+
 @dataclass(frozen=True, slots=True)
 class ClosedLoopConfig:
     """Immutable device, runtime, and iteration configuration."""
@@ -81,6 +99,10 @@ class ClosedLoopConfig:
     max_iterations: int = 10
     normalize_reference_rms: bool = DEFAULT_NORMALIZE_REFERENCE_RMS
     reference_target_rms_dbfs: float = DEFAULT_REFERENCE_TARGET_RMS_DBFS
+    seed_noise_enabled: bool = SEED_NOISE_DEFAULT_ENABLED
+    seed_noise_psd_db: float = SEED_NOISE_DEFAULT_PSD_DB
+    seed_noise_bandwidth_hz: float = SEED_NOISE_DEFAULT_BANDWIDTH_HZ
+    seed_noise_seed: int = SEED_NOISE_DEFAULT_SEED
 
     def __post_init__(self) -> None:
         if not isinstance(self.device_config, DeviceConfig):
@@ -114,6 +136,54 @@ class ClosedLoopConfig:
         max_iterations = int(self.max_iterations)
         if max_iterations <= 0:
             raise ValueError("max_iterations must be greater than zero")
+        if isinstance(self.seed_noise_enabled, (bool, np.bool_)):
+            seed_noise_enabled = bool(self.seed_noise_enabled)
+        else:
+            raise TypeError("seed_noise_enabled must be a boolean")
+        seed_noise_psd_db = _finite_real(
+            self.seed_noise_psd_db,
+            "seed_noise_psd_db",
+        )
+        if not (
+            SEED_NOISE_MIN_PSD_DB <= seed_noise_psd_db <= SEED_NOISE_MAX_PSD_DB
+        ):
+            raise ValueError(
+                "seed_noise_psd_db must be between "
+                f"{SEED_NOISE_MIN_PSD_DB:g} and {SEED_NOISE_MAX_PSD_DB:g}"
+            )
+        seed_noise_bandwidth_hz = _finite_real(
+            self.seed_noise_bandwidth_hz,
+            "seed_noise_bandwidth_hz",
+        )
+        if not (
+            0.0 < seed_noise_bandwidth_hz <= SEED_NOISE_MAX_BANDWIDTH_HZ
+        ):
+            raise ValueError(
+                "seed_noise_bandwidth_hz must be positive and at most "
+                f"{SEED_NOISE_MAX_BANDWIDTH_HZ:g}"
+            )
+        if isinstance(self.seed_noise_seed, (bool, np.bool_)) or not isinstance(
+            self.seed_noise_seed, numbers.Integral
+        ):
+            raise TypeError("seed_noise_seed must be an integer")
+        seed_noise_seed = int(self.seed_noise_seed)
+        if not 0 <= seed_noise_seed <= SEED_NOISE_MAX_SEED:
+            raise ValueError(
+                f"seed_noise_seed must be within [0, {SEED_NOISE_MAX_SEED}]"
+            )
+        noise_to_carrier_db = seed_noise_psd_db + 10.0 * math.log10(
+            self.device_config.sample_rate_hz / seed_noise_bandwidth_hz
+        )
+        if seed_noise_enabled and (
+            not math.isfinite(noise_to_carrier_db)
+            or noise_to_carrier_db > SEED_NOISE_MAX_NOISE_TO_CARRIER_DB
+        ):
+            raise ValueError(
+                "seed noise configuration produces a noise-to-carrier ratio "
+                "above the usable ceiling of "
+                f"{SEED_NOISE_MAX_NOISE_TO_CARRIER_DB:g} dB; lower "
+                "seed_noise_psd_db or raise seed_noise_bandwidth_hz"
+            )
         runtime_config = _freeze_mapping(self.runtime_config, "runtime_config")
 
         object.__setattr__(self, "runtime_name", runtime_name)
@@ -123,6 +193,14 @@ class ClosedLoopConfig:
             "reference_target_rms_dbfs",
             reference_target_rms_dbfs,
         )
+        object.__setattr__(self, "seed_noise_enabled", seed_noise_enabled)
+        object.__setattr__(self, "seed_noise_psd_db", seed_noise_psd_db)
+        object.__setattr__(
+            self,
+            "seed_noise_bandwidth_hz",
+            seed_noise_bandwidth_hz,
+        )
+        object.__setattr__(self, "seed_noise_seed", seed_noise_seed)
         object.__setattr__(self, "runtime_config", runtime_config)
         object.__setattr__(self, "max_iterations", max_iterations)
 
@@ -132,6 +210,10 @@ class ClosedLoopConfig:
             "device_config": self.device_config.to_dict(),
             "normalize_reference_rms": self.normalize_reference_rms,
             "reference_target_rms_dbfs": self.reference_target_rms_dbfs,
+            "seed_noise_enabled": self.seed_noise_enabled,
+            "seed_noise_psd_db": self.seed_noise_psd_db,
+            "seed_noise_bandwidth_hz": self.seed_noise_bandwidth_hz,
+            "seed_noise_seed": self.seed_noise_seed,
             "runtime_name": self.runtime_name,
             "runtime_config": _json_config_value(self.runtime_config),
             "max_iterations": self.max_iterations,
@@ -316,6 +398,7 @@ class ClosedLoopController:
         self._config: ClosedLoopConfig | None = None
         self._source_x: np.ndarray | None = None
         self._x: np.ndarray | None = None
+        self._seed_waveform: np.ndarray | None = None
         self._reference_safety: DigitalSafetyReport | None = None
         self._reference_normalization: ReferenceNormalizationReport | None = None
         self._runtime: DPDRuntime | None = None
@@ -702,6 +785,13 @@ class ClosedLoopController:
         timeout = config.device_config.call_timeout_seconds
         self._check_stop()
         validate_reference(x)
+        if self._seed_waveform is None:
+            self._seed_waveform = _generate_seed_waveform(x, config)
+        seed = self._seed_waveform
+        # The seed must be validated against the clean reference before any
+        # upload: additive noise raises the peak, and a seed outside the
+        # digital envelope must fail closed instead of reaching the PA.
+        validate_candidate(x, seed)
         if not preserve_power_ready:
             self._stop_tx_if_needed(timeout)
             self._check_stop()
@@ -710,7 +800,7 @@ class ClosedLoopController:
                 timeout_seconds=timeout,
             )
             self._check_stop()
-        self._switch_waveform(x, iteration=0, timeout=timeout)
+        self._switch_waveform(seed, iteration=0, timeout=timeout)
         self._check_stop()
         self._state = (
             ControllerState.POWER_READY
@@ -758,10 +848,11 @@ class ClosedLoopController:
         preprocessor = FeedbackPreprocessor(x, config.device_config.sample_rate_hz)
         result = preprocessor.process(batches, gain_correction=None)
         self._check_stop()
-        safety = validate_reference(x)
+        seed = self._seed_waveform if self._seed_waveform is not None else x
+        safety = validate_candidate(x, seed)
         record = IterationRecord(
             iteration=0,
-            y=x,
+            y=seed,
             z=result.z,
             power_dbm=power_dbm,
             attenuation_db=self._power_result.attenuation_db,
@@ -994,6 +1085,7 @@ class ClosedLoopController:
         self._records = []
         self._tx_iteration = None
         self._completed_at = None
+        self._seed_waveform = None
 
     def _set_terminal_state(self, state: ControllerState) -> None:
         if state not in {
@@ -1101,6 +1193,10 @@ class ClosedLoopController:
             device_config=DeviceConfig(**device_values),
             normalize_reference_rms=config.normalize_reference_rms,
             reference_target_rms_dbfs=config.reference_target_rms_dbfs,
+            seed_noise_enabled=config.seed_noise_enabled,
+            seed_noise_psd_db=config.seed_noise_psd_db,
+            seed_noise_bandwidth_hz=config.seed_noise_bandwidth_hz,
+            seed_noise_seed=config.seed_noise_seed,
             runtime_name=config.runtime_name,
             runtime_config=config.runtime_config,
             max_iterations=config.max_iterations,
@@ -1150,6 +1246,41 @@ def _readonly_signal(value: object, name: str) -> np.ndarray:
     if not np.all(np.isfinite(copied)):
         raise ValueError(f"{name} must contain only finite samples")
     return np.frombuffer(copied.tobytes(), dtype=np.complex128)
+
+
+def _generate_seed_waveform(
+    x: np.ndarray,
+    config: ClosedLoopConfig,
+) -> np.ndarray:
+    """Build the iteration-0 transmit waveform: the reference plus seed noise.
+
+    The seed noise is circular complex white Gaussian across the full sample
+    rate band, scaled so that the noise power inside the configured
+    integration bandwidth sits ``seed_noise_psd_db`` below the total carrier
+    (reference) power. The combined waveform is renormalized to the reference
+    RMS so the transmitted power budget and digital envelope semantics stay
+    unchanged; the noise-to-carrier power ratio is scale invariant, so the
+    renormalization does not alter the specified spectral offset. With the
+    seed disabled this returns a detached copy of the reference itself.
+    """
+    if not config.seed_noise_enabled:
+        return _readonly_signal(x, "seed waveform")
+
+    carrier_rms = _stable_rms(x, "reference")
+    carrier_power = carrier_rms**2
+    noise_power = carrier_power * 10.0 ** (config.seed_noise_psd_db / 10.0) * (
+        config.device_config.sample_rate_hz / config.seed_noise_bandwidth_hz
+    )
+    if not math.isfinite(noise_power) or noise_power <= 0.0:
+        raise ValueError("seed noise power must be positive and finite")
+    generator = np.random.default_rng(config.seed_noise_seed)
+    noise = (
+        generator.standard_normal(x.size) + 1j * generator.standard_normal(x.size)
+    ) * math.sqrt(noise_power / 2.0)
+    combined = x + noise
+    combined_rms = _stable_rms(combined, "seed waveform")
+    seed = combined * (carrier_rms / combined_rms)
+    return _readonly_signal(seed, "seed waveform")
 
 
 def _condition_reference(

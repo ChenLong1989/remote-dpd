@@ -42,6 +42,7 @@ class SimulatedClosedLoopTests(unittest.TestCase):
             ),
             runtime_config={"mu": 0.35},
             max_iterations=5,
+            seed_noise_enabled=False,
         )
         bench = create_rf_bench("simulated")
         controller = ClosedLoopController(

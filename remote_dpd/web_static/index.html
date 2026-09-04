@@ -8,7 +8,7 @@
       content="Single-screen RF workbench for iterative digital predistortion control and analysis."
     />
     <title>Remote DPD RF Workbench</title>
-    <link rel="stylesheet" href="/static/styles.css?v=single-screen-7" />
+    <link rel="stylesheet" href="/static/styles.css?v=single-screen-8" />
   </head>
   <body>
     <header class="instrument-header">
@@ -147,6 +147,9 @@
             <label><span>DPD runtime</span><select id="runtime-name"><option value="forward_model_ilc">Forward-Model ILC</option><option value="basic_ilc">Basic ILC</option></select></label>
             <label><span>ILC μ</span><input id="ilc-mu" value="1.0" /></label>
             <label><span>Iterations</span><input id="max-iterations" value="10" /></label>
+            <label class="toggle-field"><span>ILC seed noise</span><div><input id="seed-noise-enabled" type="checkbox" checked /><strong>ENABLED</strong></div></label>
+            <label><span>Seed noise PSD</span><div class="unit-control"><input id="seed-noise-psd" value="-25" /><b>dB</b></div></label>
+            <label><span>Seed noise BW</span><div class="unit-control"><input id="seed-noise-bandwidth" value="1" /><b>MHz</b></div></label>
           </div>
         </section>
 
@@ -262,6 +265,6 @@
       <div class="dialog-footer"><span></span><span></span><button class="secondary-action" data-dialog-close="runs-dialog" type="button">Close</button></div>
     </dialog>
 
-    <script src="/static/app.js?v=single-screen-7" defer></script>
+    <script src="/static/app.js?v=single-screen-8" defer></script>
   </body>
 </html>

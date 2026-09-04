@@ -24,6 +24,10 @@ import numpy as np
 from .controller import (
     DEFAULT_NORMALIZE_REFERENCE_RMS,
     DEFAULT_REFERENCE_TARGET_RMS_DBFS,
+    SEED_NOISE_DEFAULT_BANDWIDTH_HZ,
+    SEED_NOISE_DEFAULT_ENABLED,
+    SEED_NOISE_DEFAULT_PSD_DB,
+    SEED_NOISE_DEFAULT_SEED,
     ClosedLoopConfig,
     ClosedLoopController,
     ControllerSnapshot,
@@ -63,6 +67,10 @@ _CONFIG_FIELDS = frozenset(
         "device_config",
         "normalize_reference_rms",
         "reference_target_rms_dbfs",
+        "seed_noise_enabled",
+        "seed_noise_psd_db",
+        "seed_noise_bandwidth_hz",
+        "seed_noise_seed",
         "runtime_name",
         "runtime_config",
         "max_iterations",
@@ -2199,6 +2207,16 @@ def _parse_config_json(value: str) -> ParsedConfiguration:
         "reference_target_rms_dbfs",
         DEFAULT_REFERENCE_TARGET_RMS_DBFS,
     )
+    seed_noise_enabled = raw.get(
+        "seed_noise_enabled",
+        SEED_NOISE_DEFAULT_ENABLED,
+    )
+    seed_noise_psd_db = raw.get("seed_noise_psd_db", SEED_NOISE_DEFAULT_PSD_DB)
+    seed_noise_bandwidth_hz = raw.get(
+        "seed_noise_bandwidth_hz",
+        SEED_NOISE_DEFAULT_BANDWIDTH_HZ,
+    )
+    seed_noise_seed = raw.get("seed_noise_seed", SEED_NOISE_DEFAULT_SEED)
 
     try:
         decoded_device = _decode_typed_json(device_values, "device_config")
@@ -2207,6 +2225,10 @@ def _parse_config_json(value: str) -> ParsedConfiguration:
             device_config=device_config,
             normalize_reference_rms=normalize_reference_rms,
             reference_target_rms_dbfs=reference_target_rms_dbfs,
+            seed_noise_enabled=seed_noise_enabled,
+            seed_noise_psd_db=seed_noise_psd_db,
+            seed_noise_bandwidth_hz=seed_noise_bandwidth_hz,
+            seed_noise_seed=seed_noise_seed,
             runtime_name=runtime_name,
             runtime_config=decoded_runtime,
             max_iterations=max_iterations,

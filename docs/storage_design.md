@@ -72,15 +72,16 @@ JSON、NumPy 和 MAT artifact 都先写同目录唯一临时文件，再使用 `
 - 存在第 0 轮和最终实际评价轮；
 - 最终轮等于 `max_iterations`；
 - `x`、最终 `y`、最终 `z` 等长且有限；
+- 第 0 轮 `y` 与由 `(x, 生效配置)` 确定性重建的 ILC 种子波形（默认 `x`+种子噪声，见 `controller_design.md` §1.1；关闭噪声时即 `x`）逐位一致；
 - 数字安全报告与最终 `y` 一致；
 - 最终预处理仍复用第 0 轮固定增益；
 - NMSE、功率、衰减和抓取计数均有效。
 
-新生成正式文件 schema 为 2，固定变量如下；reader 和崩溃恢复仍接受既有 schema 1 缓存。
+新生成正式文件 schema 为 3，固定变量如下；reader 和崩溃恢复仍接受既有 schema 1/2 缓存。
 
 | 变量 | 类型与含义 |
 | --- | --- |
-| `schema_version` | 新文件为整数 2；旧文件 1 只读兼容 |
+| `schema_version` | 新文件为整数 3；旧文件 1/2 只读兼容 |
 | `x` | 复数列向量，RMS conditioning 后的生效参考 |
 | `y` | 复数列向量，最终已发射并评价波形 |
 | `z` | 复数列向量，对应最终预处理反馈 |
@@ -89,6 +90,6 @@ JSON、NumPy 和 MAT artifact 都先写同目录唯一临时文件，再使用 `
 | `status` | `completed` |
 | `completed_at` | UTC ISO 8601 字符串 |
 
-`config` 顶层包含设备注册名 `device_type`，其余字段与实际生效的 `ClosedLoopConfig` 一致，包括归一化开关与目标，可直接作为新文件入口的配置重新解析。schema 1 config/metrics 没有归一化字段，按 legacy 未归一化结果读取；已有完成缓存仍可补交。`completed_at` 来自 controller 实际进入终态的时刻，不是用户稍后点击导出的时刻。
+`config` 顶层包含设备注册名 `device_type`，其余字段与实际生效的 `ClosedLoopConfig` 一致，包括归一化开关与目标，以及 schema 3 新增的四项 ILC 种子噪声字段（`seed_noise_enabled/psd_db/bandwidth_hz/seed`），可直接作为新文件入口的配置重新解析。schema 2 config 缺少种子噪声字段，schema 1 config/metrics 没有归一化字段，均按各自 legacy 字段集只读；已有完成缓存仍可补交。`completed_at` 来自 controller 实际进入终态的时刻，不是用户稍后点击导出的时刻。
 
 正式结果不包含迭代历史。正常完成时同一内容先进入 run 内的可恢复缓存；文件入口在 `RunStore.export_guard()` 保护下把缓存原子发布到 outbox。无存储的程序化调用仍可直接原子导出；失败不会留下部分正式结果。

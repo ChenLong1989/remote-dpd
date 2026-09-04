@@ -483,6 +483,7 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
             runtime_name=runtime_name,
             runtime_config={"mu": mu},
             max_iterations=15,
+            seed_noise_enabled=False,
         )
         bench = create_rf_bench("simulated")
         controller = ClosedLoopController(
