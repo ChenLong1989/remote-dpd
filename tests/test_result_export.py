@@ -20,6 +20,7 @@ from remote_dpd.power_control import PowerController
 from remote_dpd.protocol import load_mat
 from remote_dpd.result_export import (
     FINAL_RESULT_SCHEMA_VERSION,
+    SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION,
     ResultExportError,
     build_final_payload,
     export_final_mat,
@@ -308,6 +309,10 @@ class FinalResultExportTests(unittest.TestCase):
         legacy_config = json.loads(payload["config"])
         legacy_config.pop("normalize_reference_rms")
         legacy_config.pop("reference_target_rms_dbfs")
+        legacy_config.pop("seed_noise_enabled")
+        legacy_config.pop("seed_noise_psd_db")
+        legacy_config.pop("seed_noise_bandwidth_hz")
+        legacy_config.pop("seed_noise_seed")
         legacy_metrics = dict(payload["metrics"])
         legacy_metrics.pop("source_rms_dbfs")
         legacy_metrics.pop("reference_rms_dbfs")
@@ -331,6 +336,33 @@ class FinalResultExportTests(unittest.TestCase):
             "normalize_reference_rms",
             json.loads(loaded["config"]),
         )
+
+    def test_schema_two_result_remains_readable_without_seed_noise_fields(self):
+        payload = build_final_payload(self.snapshot)
+        schema_two_config = json.loads(payload["config"])
+        schema_two_config.pop("seed_noise_enabled")
+        schema_two_config.pop("seed_noise_psd_db")
+        schema_two_config.pop("seed_noise_bandwidth_hz")
+        schema_two_config.pop("seed_noise_seed")
+        schema_two_payload = {
+            **payload,
+            "schema_version": SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION,
+            "config": json.dumps(schema_two_config, sort_keys=True),
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            from scipy.io import savemat
+
+            target = Path(directory) / "schema_two.mat"
+            savemat(target, schema_two_payload)
+            loaded = load_final_payload(target)
+
+        self.assertEqual(
+            loaded["schema_version"], SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION
+        )
+        loaded_config = json.loads(loaded["config"])
+        self.assertTrue(loaded_config["normalize_reference_rms"])
+        self.assertNotIn("seed_noise_enabled", loaded_config)
 
 
 if __name__ == "__main__":

@@ -194,7 +194,7 @@ class FileCommandServiceTests(unittest.TestCase):
         result_path = self.service.result_path("run-e2e")
         self.assertTrue(result_path.is_file())
         payload = loadmat(result_path, squeeze_me=True, struct_as_record=False)
-        self.assertEqual(int(payload["schema_version"]), 2)
+        self.assertEqual(int(payload["schema_version"]), 3)
         np.testing.assert_allclose(np.asarray(payload["x"]).reshape(-1), self.x)
         self.assertEqual(np.asarray(payload["y"]).size, self.x.size)
         self.assertEqual(np.asarray(payload["z"]).size, self.x.size)

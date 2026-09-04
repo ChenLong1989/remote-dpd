@@ -19,11 +19,13 @@ from .controller import (
     ControllerSnapshot,
     ControllerState,
     IterationRecord,
+    _generate_seed_waveform,
 )
 from .protocol import load_mat, load_mat_file, save_mat
 
 LEGACY_FINAL_RESULT_SCHEMA_VERSION = 1
-FINAL_RESULT_SCHEMA_VERSION = 2
+SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION = 2
+FINAL_RESULT_SCHEMA_VERSION = 3
 _FINAL_FIELDS = frozenset(
     {"schema_version", "x", "y", "z", "metrics", "config", "status", "completed_at"}
 )
@@ -36,9 +38,15 @@ _LEGACY_FINAL_CONFIG_FIELDS = frozenset(
         "max_iterations",
     }
 )
-_FINAL_CONFIG_FIELDS = _LEGACY_FINAL_CONFIG_FIELDS | {
+_SCHEMA_2_FINAL_CONFIG_FIELDS = _LEGACY_FINAL_CONFIG_FIELDS | {
     "normalize_reference_rms",
     "reference_target_rms_dbfs",
+}
+_FINAL_CONFIG_FIELDS = _SCHEMA_2_FINAL_CONFIG_FIELDS | {
+    "seed_noise_enabled",
+    "seed_noise_psd_db",
+    "seed_noise_bandwidth_hz",
+    "seed_noise_seed",
 }
 _LEGACY_FINAL_METRIC_FIELDS = frozenset(
     {
@@ -118,9 +126,19 @@ def build_final_payload(
     if x.shape != y.shape or x.shape != z.shape:
         raise ResultExportError("x, final y, and final z must have the same length")
 
+    # Record 0 transmits the deterministic iteration-0 seed: the reference
+    # itself plus the configured seed noise. Regenerating it from (x, config)
+    # keeps a strict tamper check even when the seed differs from x.
+    seed = _generate_seed_waveform(snapshot.x, snapshot.config)
     calibration_y = _column_signal(calibration_record.y, "record 0 y")
-    if calibration_y.shape != x.shape or not np.array_equal(calibration_y, x):
-        raise ResultExportError("calibration record 0 must have y equal to x")
+    if calibration_y.shape != x.shape or not np.array_equal(
+        calibration_y,
+        _column_signal(seed, "iteration-0 seed"),
+    ):
+        raise ResultExportError(
+            "calibration record 0 must equal the deterministic iteration-0 "
+            "seed waveform derived from the reference and config"
+        )
 
     metrics = _build_metrics(snapshot, calibration_record, final_record, y)
     config_json = _build_config_json(snapshot)
@@ -183,11 +201,14 @@ def _validate_final_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     schema_version = _integer_scalar(raw["schema_version"], "schema_version")
     if schema_version not in {
         LEGACY_FINAL_RESULT_SCHEMA_VERSION,
+        SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION,
         FINAL_RESULT_SCHEMA_VERSION,
     }:
         raise ResultExportError(
             "schema_version must be "
-            f"{LEGACY_FINAL_RESULT_SCHEMA_VERSION} or {FINAL_RESULT_SCHEMA_VERSION}"
+            f"{LEGACY_FINAL_RESULT_SCHEMA_VERSION}, "
+            f"{SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION}, or "
+            f"{FINAL_RESULT_SCHEMA_VERSION}"
         )
     if raw["status"] != ControllerState.COMPLETED.value:
         raise ResultExportError("final result status must be 'completed'")
@@ -213,7 +234,7 @@ def _validate_final_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     )
     if metrics["iteration"] != config_values["max_iterations"]:
         raise ResultExportError("metrics.iteration must match config.max_iterations")
-    if schema_version == FINAL_RESULT_SCHEMA_VERSION:
+    if schema_version != LEGACY_FINAL_RESULT_SCHEMA_VERSION:
         _validate_loaded_normalization(config_values, metrics)
 
     return {
@@ -260,7 +281,11 @@ def _validate_loaded_config(
     expected_fields = (
         _LEGACY_FINAL_CONFIG_FIELDS
         if schema_version == LEGACY_FINAL_RESULT_SCHEMA_VERSION
-        else _FINAL_CONFIG_FIELDS
+        else (
+            _SCHEMA_2_FINAL_CONFIG_FIELDS
+            if schema_version == SCHEMA_2_FINAL_RESULT_SCHEMA_VERSION
+            else _FINAL_CONFIG_FIELDS
+        )
     )
     if set(parsed) != expected_fields:
         raise ResultExportError("config JSON fields differ from the final contract")
@@ -281,7 +306,7 @@ def _validate_loaded_config(
         raise ResultExportError("config.max_iterations must be an integer")
     if max_iterations <= 0:
         raise ResultExportError("config.max_iterations must be positive")
-    if schema_version == FINAL_RESULT_SCHEMA_VERSION:
+    if schema_version != LEGACY_FINAL_RESULT_SCHEMA_VERSION:
         normalize_reference_rms = parsed["normalize_reference_rms"]
         if not isinstance(normalize_reference_rms, bool):
             raise ResultExportError("config.normalize_reference_rms must be a boolean")
@@ -299,6 +324,24 @@ def _validate_loaded_config(
         ):
             raise ResultExportError(
                 "config.reference_target_rms_dbfs is outside the supported range"
+            )
+    if schema_version == FINAL_RESULT_SCHEMA_VERSION:
+        if not isinstance(parsed["seed_noise_enabled"], bool):
+            raise ResultExportError("config.seed_noise_enabled must be a boolean")
+        for seed_name in ("seed_noise_psd_db", "seed_noise_bandwidth_hz"):
+            seed_value = parsed[seed_name]
+            if isinstance(seed_value, bool) or not isinstance(seed_value, (int, float)):
+                raise ResultExportError(f"config.{seed_name} must be a number")
+            if not math.isfinite(float(seed_value)):
+                raise ResultExportError(f"config.{seed_name} must be finite")
+        seed_noise_seed = parsed["seed_noise_seed"]
+        if (
+            isinstance(seed_noise_seed, bool)
+            or not isinstance(seed_noise_seed, int)
+            or seed_noise_seed < 0
+        ):
+            raise ResultExportError(
+                "config.seed_noise_seed must be a non-negative integer"
             )
     return value, parsed
 

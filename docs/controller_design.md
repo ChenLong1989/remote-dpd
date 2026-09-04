@@ -10,7 +10,8 @@
 - runtime 注册名和递归不可变的 runtime 配置，默认是 `basic_ilc` 与 `mu=0.5`；
 - 正整数 `max_iterations`；
 - `normalize_reference_rms` 开关，默认 `true`；
-- `reference_target_rms_dbfs`，默认 `-15.0`，允许有限 `[-120, 0] dBFS`。
+- `reference_target_rms_dbfs`，默认 `-15.0`，允许有限 `[-120, 0] dBFS`；
+- ILC 种子噪声四字段：`seed_noise_enabled`（默认 `true`）、`seed_noise_psd_db`（默认 `-25.0`，允许 `[-100, 20]`）、`seed_noise_bandwidth_hz`（默认 `1e6`，允许 `(0, 1e9]`）和 `seed_noise_seed`（默认 `0`，非负整数）。
 
 Controller 保存的生效配置始终描述实际执行的参数：`apply_config` 用 runtime 的归一化结果（默认值补齐，例如 `forward_model_ilc` 的 `orders/memory_depths/ridge` 和 `basic_ilc` 的 `mu`）替换调用方原始 `runtime_config`，与设备 schema 归一化后的 `device_options` 同等对待。snapshot、run 记录和正式结果 MAT 因此总是记录完整生效配置，调用方省略的字段不会在结果中缺失。
 
@@ -23,7 +24,21 @@ scale = target_rms / source_rms
 x = source * scale
 ```
 
-关闭归一化时 `scale=1`。缩放是整条复数波形的单一正实数乘法，不改变相位、频谱形状、PAPR 或样点数。应用新配置时始终从源波形重算，避免重复缩放并允许切换开关/目标。只有生效 `x` 接受既有峰值安全检查并成为 `y₀`、runtime/预处理参考、snapshot 和存储 reference；系统不削峰。source 必须一维、非空、有限且非零 RMS，开启归一化时允许 source 原始峰值超过满量程，只要生效 `x` 最终通过安全检查。
+关闭归一化时 `scale=1`。缩放是整条复数波形的单一正实数乘法，不改变相位、频谱形状、PAPR 或样点数。应用新配置时始终从源波形重算，避免重复缩放并允许切换开关/目标。只有生效 `x` 接受既有峰值安全检查并成为 runtime/预处理参考、snapshot 和存储 reference；系统不削峰。source 必须一维、非空、有限且非零 RMS，开启归一化时允许 source 原始峰值超过满量程，只要生效 `x` 最终通过安全检查。
+
+### 1.1 ILC 种子噪声（第 0 轮起点）
+
+ILC 的第 0 轮发射波形不再要求等于 `x`，而是确定性种子 `y₀ = normalize(x + n)`：
+
+- `n` 是圆对称复高斯白噪声，展宽整个采样率带宽 `fs`（复基带总带宽）。其功率谱密度按积分带宽定义：任意 `seed_noise_bandwidth_hz`（默认 1 MHz）频带内的噪声功率比载波（即 `x` 的平均功率，与功率计口径一致）低 `|seed_noise_psd_db|`（默认 25 dB），故总噪声功率为 `P_x · 10^(psd/10) · fs/B_int`。例如 `fs=491.52 MS/s`、`-25 dB/1 MHz` 时噪声总功率约为载波的 1.55 倍。
+- `normalize` 把 `x + n` 整体缩放回 `rms(x)`：发射功率预算和数字包络语义与干净运行完全一致，且噪声/载波功率比（含谱密度偏移）不因缩放改变。
+- 噪声由 `numpy.random.default_rng(seed_noise_seed)` 生成，`(x, config)` 确定时种子逐位可复现；同一任务内停止发射后重启（`POWER_READY` 路径）复用同一种子，保证功率调谐与迭代记录的一致性。加载新参考、重应用配置或 reset 后重新生成。
+- 配置校验在生成前拒绝病态组合：psd 超范围、带宽非正/过大、RNG 种子为负、以及折算噪声/载波总功率比超过 +40 dB 的设置。
+- 种子上传前以 `validate_candidate(x, y₀)` 做 fail-closed 安全检查（峰值 ≤ 0 dBFS、RMS 相对 `x` 增长 ≤ 2 dB）；高噪声电平配低 PAPR 载波可能超峰值，此时任务在上传前失败，不会向 PA 发射不安全波形。
+
+功率调谐在种子波形发射后进行，因此锁定衰减对应"载波+噪声"的总功率等于 `target_power_dbm`；种子内载波分量比干净运行低（低多少取决于噪声总功率占比），随 ILC 收敛（`z→x`）逐步恢复到目标功率。固定增益仍按第 0 轮 `rms(x)/rms(z₀)` 计算，把闭环锚定在调谐工作点：收敛后发射总功率回到锁定值而内容变为干净载波。后续迭代按所选 runtime 的正常 ILC 逻辑执行，整体表现为把注入噪声逐步"降噪"挤出。
+
+该行为默认启用（用户指令要求的起点变更）；显式配置 `seed_noise_enabled=false` 时 `y₀=x`，回到经典起点。注意在强压缩 PA 上，basic ILC（恒等方向）叠加噪声种子可能触发候选 RMS 增长保护而 fail closed，这是该组合的真实物理限制，建议此类场景使用 `forward_model_ilc`。
 
 应用配置时，控制器先通过 `RFBench.parameter_schema` 校验专属配置并补齐所有默认项，再把这份实际生效配置交给设备并保存到 snapshot。`ClosedLoopConfig.to_dict()` 返回严格 JSON 结构；复数和 NumPy array 使用带 `$type`、dtype、shape 和 data 的显式表示。array 只接受 bool、常规精度数值/复数和 Unicode dtype，避免产生无法可靠序列化的 bytes、datetime、structured 或扩展精度标量。
 
@@ -73,11 +88,11 @@ stateDiagram-v2
 
 `run_auto()` 接受 `READY`、`POWER_READY` 或 `CALIBRATED`，自动补齐尚缺的安全前置步骤，然后运行到 `max_iterations`。非法顺序在调用设备前抛出 `ControllerStateError`。
 
-第 0 轮发送 `y_0=x`，完成初始功率调节、一次额外物理功率安全监控和反馈抓取，再建立固定增益并提交记录 0。每个 `step()` 生成并实际评价下一个整数轮次。配置 `max_iterations=N` 时，记录恰好包含第 0 轮至第 N 轮；最终导出的候选应取已经实际发射、监控和抓取的 `y_N`/`z_N`，不会生成未验证的 `y_(N+1)`。
+第 0 轮发送种子波形 `y₀`（默认 `x` 加 §1.1 种子噪声；显式关闭时为 `x` 本身），完成初始功率调节、一次额外物理功率安全监控和反馈抓取，再建立固定增益并提交记录 0。每个 `step()` 生成并实际评价下一个整数轮次。配置 `max_iterations=N` 时，记录恰好包含第 0 轮至第 N 轮；最终导出的候选应取已经实际发射、监控和抓取的 `y_N`/`z_N`，不会生成未验证的 `y_(N+1)`。
 
 ## 4. 初始功率调节
 
-`PowerController.tune()` 要求参考波形已经发射。它首先设置 `initial_attenuation_db`，每次设置后等待 `settle_seconds` 并测量：
+`PowerController.tune()` 要求种子波形（默认 `x`+噪声，见 §1.1）已经发射。它首先设置 `initial_attenuation_db`，每次设置后等待 `settle_seconds` 并测量：
 
 ```text
 gap = target_power_dbm - measured_power_dbm
@@ -111,9 +126,9 @@ controller 会保留第 0 轮至第 N 轮的波形和诊断，因此还要求 `l
 
 每个 `IterationRecord` 保存：
 
-- 轮次、不可写 `y` 和 `z`；
+- 轮次、不可写 `y` 和 `z`；第 0 轮的 `y` 是实际发射的种子波形（默认含 §1.1 噪声）；
 - 本轮反馈前的物理功率和首轮锁定衰减；
-- 数字安全报告；
+- 数字安全报告（第 0 轮报告以 `validate_candidate(x, y₀)` 口径记录种子的峰值与 RMS）；
 - 完整预处理结果和 runtime 指标。
 
 `ControllerSnapshot` 提供一致的状态、设备注册名、连接/配置/发射标记、当前操作、停止标记、最大/当前轮次、固定增益、锁定衰减、最近一次实际监控功率、参考安全报告、reference normalization 报告、全部已提交记录、功率调节轨迹、终态 UTC 时间和最后结构化错误。归一化报告包含开关、source/effective RMS 及 dBFS、目标、线性比例和 scale dB。最近功率独立于已提交记录，因此功率越界或后续抓取失败时仍保留触发本轮行为的读数。`y`/`z` 属性只引用最新完整记录。

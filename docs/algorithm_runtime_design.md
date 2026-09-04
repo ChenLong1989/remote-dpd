@@ -29,6 +29,8 @@ created -> initialize(config) -> step(...) * N -> reset()
 
 ## 2. 内置 runtime
 
+两个内置 runtime 都从第 0 轮校准记录取当前 `(x, y₀, z₀)`。自 ILC 种子噪声特性合入后，`y₀` 默认不再是 `x` 本身，而是 controller 生成的确定性种子波形 `normalize(x + n)`（宽带高斯白噪声，规格与开关见 `controller_design.md` §1.1）；`x` 恒为干净参考。首轮误差 `z₀ - x` 因此默认包含注入噪声分量，后续迭代按各自更新公式把它逐步挤出（"降噪"式收敛）。显式配置 `seed_noise_enabled=false` 时回到经典 `y₀ = x` 起点。
+
 ### 2.1 基础 ILC
 
 `BasicILCRuntime` 注册名为 `basic_ilc`，唯一参数为正有限实数 `mu`，默认值 `0.5`。更新公式是：

@@ -967,6 +967,10 @@ function selectDevice(deviceType) {
   byId("target-power").value = common.target_power_dbm;
   byId("normalize-reference-rms").checked = configuration.normalize_reference_rms;
   byId("reference-target-rms").value = configuration.reference_target_rms_dbfs;
+  byId("seed-noise-enabled").checked = configuration.seed_noise_enabled !== false;
+  byId("seed-noise-psd").value = configuration.seed_noise_psd_db ?? -25;
+  byId("seed-noise-bandwidth").value =
+    (configuration.seed_noise_bandwidth_hz ?? 1e6) / 1e6;
   byId("average-segments").value = common.average_segment_count;
   byId("safety-power").value = common.safety_power_limit_dbm;
   byId("initial-attenuation").value = common.initial_attenuation_db;
@@ -992,7 +996,16 @@ function selectDevice(deviceType) {
     : "Instrument Parameters";
   renderDeviceOptions(state.device.schema.fields, common.device_options || {});
   syncReferenceNormalizationControls();
+  syncSeedNoiseControls();
   updateButtons();
+}
+
+function syncSeedNoiseControls() {
+  const enabled = byId("seed-noise-enabled").checked;
+  byId("seed-noise-psd").disabled = !enabled;
+  byId("seed-noise-bandwidth").disabled = !enabled;
+  const status = byId("seed-noise-enabled").nextElementSibling;
+  if (status) status.textContent = enabled ? "ENABLED" : "OFF";
 }
 
 function renderDeviceOptions(fields, configuredOptions = {}) {
@@ -1211,6 +1224,10 @@ function collectConfiguration() {
       "reference-target-rms",
       "Reference target RMS",
     ),
+    seed_noise_enabled: byId("seed-noise-enabled").checked,
+    seed_noise_psd_db: finiteValue("seed-noise-psd", "Seed noise PSD"),
+    seed_noise_bandwidth_hz:
+      finiteValue("seed-noise-bandwidth", "Seed noise bandwidth") * 1e6,
     device_config: {
       center_frequency_hz: finiteValue("center-frequency", "Center frequency") * 1e6,
       sample_rate_hz: finiteValue("sample-rate", "Sample rate") * 1e6,
@@ -1479,6 +1496,15 @@ function renderRunConfirmSummary(configuration) {
         : "Basic ILC",
     ],
     ["ILC iterations", String(configuration.max_iterations)],
+    [
+      "ILC seed noise",
+      configuration.seed_noise_enabled
+        ? `${formatNumber(configuration.seed_noise_psd_db, 1)} dB / ${formatNumber(
+            configuration.seed_noise_bandwidth_hz / 1e6,
+            3,
+          )} MHz`
+        : "OFF",
+    ],
     ["Reference waveform", state.selectedWaveform || "—"],
   ];
   const summary = byId("run-confirm-summary");
@@ -1892,6 +1918,10 @@ function bindControls() {
   byId("normalize-reference-rms").addEventListener(
     "change",
     syncReferenceNormalizationControls,
+  );
+  byId("seed-noise-enabled").addEventListener(
+    "change",
+    syncSeedNoiseControls,
   );
   byId("reference-target-rms").addEventListener(
     "input",

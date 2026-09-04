@@ -17,6 +17,10 @@ import numpy as np
 from .controller import (
     DEFAULT_NORMALIZE_REFERENCE_RMS,
     DEFAULT_REFERENCE_TARGET_RMS_DBFS,
+    SEED_NOISE_DEFAULT_BANDWIDTH_HZ,
+    SEED_NOISE_DEFAULT_ENABLED,
+    SEED_NOISE_DEFAULT_PSD_DB,
+    SEED_NOISE_DEFAULT_SEED,
     ControllerSnapshot,
     IterationRecord,
 )
@@ -593,6 +597,10 @@ def _web_default_configuration(
         "device_config": DeviceConfig().to_dict(),
         "normalize_reference_rms": DEFAULT_NORMALIZE_REFERENCE_RMS,
         "reference_target_rms_dbfs": DEFAULT_REFERENCE_TARGET_RMS_DBFS,
+        "seed_noise_enabled": SEED_NOISE_DEFAULT_ENABLED,
+        "seed_noise_psd_db": SEED_NOISE_DEFAULT_PSD_DB,
+        "seed_noise_bandwidth_hz": SEED_NOISE_DEFAULT_BANDWIDTH_HZ,
+        "seed_noise_seed": SEED_NOISE_DEFAULT_SEED,
         "runtime_name": "basic_ilc",
         "runtime_config": {"mu": 0.5},
         "max_iterations": 10,
@@ -631,6 +639,16 @@ def _validated_quick_start_profile(
         reference_target = profile.get(
             "reference_target_rms_dbfs", DEFAULT_REFERENCE_TARGET_RMS_DBFS
         )
+        seed_noise_enabled = profile.get(
+            "seed_noise_enabled", SEED_NOISE_DEFAULT_ENABLED
+        )
+        seed_noise_psd_db = profile.get(
+            "seed_noise_psd_db", SEED_NOISE_DEFAULT_PSD_DB
+        )
+        seed_noise_bandwidth_hz = profile.get(
+            "seed_noise_bandwidth_hz", SEED_NOISE_DEFAULT_BANDWIDTH_HZ
+        )
+        seed_noise_seed = profile.get("seed_noise_seed", SEED_NOISE_DEFAULT_SEED)
         runtime_name = profile.get("runtime_name", "basic_ilc")
         runtime_config = profile.get("runtime_config") or {"mu": 0.5}
         max_iterations = profile.get("max_iterations", 10)
@@ -640,6 +658,19 @@ def _validated_quick_start_profile(
             reference_target, bool
         ):
             raise TypeError("reference_target_rms_dbfs must be a number")
+        if not isinstance(seed_noise_enabled, (bool, np.bool_)):
+            raise TypeError("seed_noise_enabled must be a boolean")
+        if (
+            not isinstance(seed_noise_psd_db, (int, float))
+            or isinstance(seed_noise_psd_db, bool)
+            or not isinstance(seed_noise_bandwidth_hz, (int, float))
+            or isinstance(seed_noise_bandwidth_hz, bool)
+        ):
+            raise TypeError("seed noise level fields must be numbers")
+        if isinstance(seed_noise_seed, bool) or not isinstance(
+            seed_noise_seed, (int, np.integer)
+        ):
+            raise TypeError("seed_noise_seed must be an integer")
         if not isinstance(runtime_name, str) or not runtime_name:
             raise TypeError("runtime_name must be a non-empty string")
         if not isinstance(runtime_config, Mapping):
@@ -658,6 +689,10 @@ def _validated_quick_start_profile(
         "device_config": effective_config.to_dict(),
         "normalize_reference_rms": bool(normalize),
         "reference_target_rms_dbfs": float(reference_target),
+        "seed_noise_enabled": bool(seed_noise_enabled),
+        "seed_noise_psd_db": float(seed_noise_psd_db),
+        "seed_noise_bandwidth_hz": float(seed_noise_bandwidth_hz),
+        "seed_noise_seed": int(seed_noise_seed),
         "runtime_name": runtime_name,
         "runtime_config": dict(runtime_config),
         "max_iterations": max_iterations,

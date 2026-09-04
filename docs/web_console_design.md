@@ -112,11 +112,11 @@ Web 另外限制平均段数和功率调节次数不超过 10000、稳定时间�
 
 单页控制台使用固定 `100dvh` 仪表布局，document 不滚动。persistent header 持续显示 TX/RX/PWR、Controller、RF Output、中心频率、采样率、功率、衰减、迭代以及 `CONFIG/RUNS/RF OFF`。主区同时显示 `Z₀/Zₙ/Eₙ` 频谱、核心 DPD result 和唯一主 CTA；底部单一辅助 pane 在 Convergence、ACLR、AM/AM、AM/PM、Power Tune、Alignment 间切换。
 
-Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Bench / DUT 页签分组。Signal 页提供 DPD runtime 选择（`forward_model_ilc` / `basic_ilc`）和对应 `mu`；模型结构参数不在页面暴露，文件/JSON 入口可全量配置。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect；物理 bench 的一键提交前增加确认弹窗（§10.3），弹窗摘要同时显示所选 runtime。
+Configuration、Expert Manual Control 和 Runs/Inspector 使用原生 dialog；配置按 Signal、Power & Safety、Analysis Bands、Bench / DUT 页签分组。Signal 页提供 DPD runtime 选择（`forward_model_ilc` / `basic_ilc`）、对应 `mu`，以及 ILC 种子噪声三字段（`ILC seed noise` 开关、`Seed noise PSD`（dB，相对载波/积分带宽）与 `Seed noise BW`（MHz））；关闭开关时禁用两个数值输入。模型结构参数和噪声 RNG 种子不在页面暴露，文件/JSON 入口可全量配置。默认 simulated 配置和首个安全 waveform 加载成功后，首页一次点击 `START DEFAULT SIMULATION` 即向现有 run 命令提交完整 waveform/config，无需先 Load、Configure 或 Connect；物理 bench 的一键提交前增加确认弹窗（§10.3），弹窗摘要同时显示所选 runtime 与种子噪声电平。
 
-新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用 reference RMS normalization `true/-15 dBFS`、物理 Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`forward_model_ilc` runtime、`mu=1.0` 和 15 次 ILC。simulated schema v3 默认 PA 的完整实测全程单调收敛，NMSE 从 `-24.84 dB` 改善到 `-38.01 dB`，左右 ACLR 从 `-28.19/-29.29 dBc` 改善到 `-41.19/-42.48 dBc`，最终峰值约 `0.519`。同场景下 `basic_ilc` 在第 11 轮后开始发散并推高数字峰值，可在 Configuration 中显式选择以复现。数字安全上限和 runtime 通用默认保持不变。
+新页面的 simulated 默认值来自 `/api/v1/devices` 返回的确定性 Web-only quick-start profile。初始化、刷新、切换设备和 `RESET DEFAULTS` 都从 `default_configuration` 重建公共字段和动态 `device_options`；不读取浏览器存储、run 历史或 controller 状态。当前 profile 固定匹配默认 `491.52 MS/s` waveform，使用 reference RMS normalization `true/-15 dBFS`、物理 Target power `-15 dBm`、十段平均、1000 万单次抓取上限、`forward_model_ilc` runtime、`mu=1.0` 和 15 次 ILC；种子噪声默认开启（`-25 dB/1 MHz`，见 `controller_design.md` §1.1），第 0 轮从"载波+宽带噪声"起点开始。NR100 波形实测（simulated schema v3 默认 PA）：it0 NMSE `-1.35 dB`（噪声主导），FM-ILC 单调收敛至 `-28.5 dB`（降噪过程），最终数字峰值约 `0.84`、发射 RMS 回到参考电平。同场景 `basic_ilc` 在 `mu=1.0` 下第 2 轮候选峰值越限被 fail-closed 拦截（记录 0/1 轮后任务 FAILED），这是恒等方向 ILC 在强压缩 PA 上叠加噪声种子的真实物理限制；此类降噪实验建议使用 `forward_model_ilc` 或调小 `mu`。数字安全上限和 runtime 通用默认保持不变。
 
-Signal 配置页显示 normalization 开关和 target RMS；关闭时禁用 target 输入。waveform preview 显示 source RMS/peak 以及按当前 draft 预计的 scale、effective RMS/peak，预计峰值超过 0 dBFS 时使用告警色。浏览器只预估和展示，不修改 IQ；最终缩放与峰值安全由 controller 完成。公共物理 Target power 仍在 Power & Safety 页编辑。
+Signal 配置页显示 normalization 开关和 target RMS；关闭时禁用 target 输入，种子噪声开关同理联动自身数值输入。waveform preview 显示 source RMS/peak 以及按当前 draft 预计的 scale、effective RMS/peak，预计峰值超过 0 dBFS 时使用告警色（preview 不包含种子噪声，它评估的是参考 conditioning；种子噪声的峰值安全由 controller 在上传前检查）。浏览器只预估和展示，不修改 IQ；最终缩放与峰值安全由 controller 完成。公共物理 Target power 仍在 Power & Safety 页编辑。
 
 页面使用 SSE 更新状态；浏览器不支持 EventSource 或流暂时断开时，每秒 session polling 仍会纠正状态。按钮根据 active command 和 controller 状态禁用，服务端仍独立执行完整互斥和状态校验。原生 Canvas 绘图层负责工程坐标、单位、trace、marker、Auto Set 和相对/绝对频率，不引入 Node 构建链或外部 CDN。
 
@@ -281,7 +281,8 @@ schema 表单（PA 系数区块按 schema 字段存在性隐藏）。
 
 选中非 `simulated` 设备时，主 CTA 与配置 dialog 的 `START` 动作在提交 `run`
 命令前弹出原生确认 dialog，显示设备名、中心频率、采样率、目标功率、安全限值、
-初始衰减、迭代数与参考波形；只有显式 `Confirm & Run` 后才经 `WebCommandBridge`
+初始衰减、迭代数、DPD runtime、种子噪声电平（开启时显示 `PSD/带宽`，关闭显示
+`OFF`）与参考波形；只有显式 `Confirm & Run` 后才经 `WebCommandBridge`
 提交命令，Escape/Cancel 不改变 RF 与 controller 状态。simulated 保持一键直达。
 确认弹窗是纯交互层防护，不放松任何服务端互斥、安全校验与命令路径。
 

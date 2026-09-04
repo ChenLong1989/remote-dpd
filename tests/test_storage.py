@@ -19,6 +19,7 @@ from remote_dpd.controller import (
     ControllerState,
     IterationRecord,
     ReferenceNormalizationReport,
+    _generate_seed_waveform,
 )
 from remote_dpd.device import DeviceConfig
 from remote_dpd.power_control import PowerAdjustment
@@ -467,6 +468,10 @@ class RunStorageTests(unittest.TestCase):
         config = json.loads(payload["config"])
         config.pop("normalize_reference_rms")
         config.pop("reference_target_rms_dbfs")
+        config.pop("seed_noise_enabled")
+        config.pop("seed_noise_psd_db")
+        config.pop("seed_noise_bandwidth_hz")
+        config.pop("seed_noise_seed")
         metrics = dict(payload["metrics"])
         metrics.pop("source_rms_dbfs")
         metrics.pop("reference_rms_dbfs")
@@ -483,6 +488,10 @@ class RunStorageTests(unittest.TestCase):
         stored_config = self.config.to_dict()
         stored_config.pop("normalize_reference_rms")
         stored_config.pop("reference_target_rms_dbfs")
+        stored_config.pop("seed_noise_enabled")
+        stored_config.pop("seed_noise_psd_db")
+        stored_config.pop("seed_noise_bandwidth_hz")
+        stored_config.pop("seed_noise_seed")
         (recorder.path / "config.json").write_text(
             json.dumps(stored_config, separators=(",", ":"), sort_keys=True),
             encoding="utf-8",
@@ -520,6 +529,7 @@ class RunStorageTests(unittest.TestCase):
             x, self.config.device_config.sample_rate_hz
         ).process((batch,))
         safety = validate_reference(x)
+        seed = _generate_seed_waveform(x, self.config)
         reference_rms = float(np.sqrt(np.mean(np.abs(x) ** 2)))
         reference_rms_dbfs = float(20.0 * np.log10(reference_rms))
         normalization = ReferenceNormalizationReport(
@@ -534,7 +544,7 @@ class RunStorageTests(unittest.TestCase):
         )
         record = IterationRecord(
             iteration=0,
-            y=x,
+            y=seed,
             z=preprocessing.z,
             power_dbm=-10.1,
             attenuation_db=25.0,
@@ -547,7 +557,7 @@ class RunStorageTests(unittest.TestCase):
         )
         records = (record,)
         if state is ControllerState.COMPLETED:
-            candidate_safety = validate_candidate(x, x)
+            candidate_safety = validate_candidate(x, seed)
             records = (
                 record,
                 replace(record, iteration=1, digital_safety=candidate_safety),
