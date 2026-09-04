@@ -43,35 +43,65 @@ y_candidate = y_current - mu * (z_current - x)
 
 ### 2.2 前向模型梯度 ILC
 
-`ForwardModelILCRuntime` 注册名为 `forward_model_ilc`，每步在更新前先拟合 PA 前向模型并把误差经模型 Jacobian 伴随（反向传播）折算回 PA 输入位置：
+`ForwardModelILCRuntime` 注册名为 `forward_model_ilc`，每步先在残差形式下拟合 PA 前向模型，再把误差经模型 Jacobian 伴随（反向传播）折算回 PA 输入位置：
 
 ```text
-basis_k[n]  = y[n-m_k] * |y[n-m_k]|**(p_k-1)            (periodic roll boundary)
-z_model     = argmin_c ||sum_k c_k basis_k - z||^2       (complex LS, see below)
-A-weight_k  = (p_k+1)/2 * |y|**(p_k-1)                   (d/dy part of basis_k)
-B-weight_k  = (p_k-1)/2 * conj(y)^2 * |y|**(p_k-3)       (d/dy* part of basis_k)
-g           = sum_k conj(c_k)*A-weight_k*roll(e,-m_k) + c_k*conj(B-weight_k*roll(e,-m_k))
+z_hat       = y + Phi(y) w                              (residual FLF model, see below)
+w           = argmin ||z - y - Phi w||^2 + lambda||w||^2 + lambda_d||D beta||^2
+g           = e + A_Phi^H e + conj(B_Phi^H e)           (e = z - x)
 y_candidate = y_current - mu * g
 ```
 
-要点：
+残差化是设计核心：恒等项 `y` 直连使模型 Jacobian 恒含单位阵，ILC 固定点从 `J_fit^H e = 0`（模型类失配时偏离 `e=0`，真机 MP 基时代 ≈-32 dB 停滞的根因）回到 `(I + J_Phi)^H e = 0`，被恒等项拉回 `e≈0`；`w→0`（或正则极大）时更新严格退化为 basic ILC，模型失配不再制造偏置固定点。恒等直连在反向传播中表现为 `g` 的 `e` 直连项。
 
-- 拟合只用当前轮 `(y_current, z_current)`，不跨轮累积；`z` 是已对齐反馈，因此线性系数自然吸收衰减、反馈增益/相位和残余对齐等复合线性路径，无需显式建模。
-- LS 采用列 RMS 归一化 + 相对岭正则（`ridge * N` 加在归一化 Gram 对角）的正规方程，`numpy.linalg.solve` 求解；Gram 与右端分块累积（每块约 800 万基样点）以限制长波形的峰值内存。全零列直接赋零系数，病态矩阵回退 `lstsq`。
-- `g` 是 `||F(y) - x||^2` 相对复参数化 `y` 的精确实梯度方向。非全纯映射必须包含共轭项 `conj(B^H e)`：只取 `A^H e` 或误用 `(A+B)^H e` 都会使方向倾斜，深度压缩下足以导致停滞或发散。伴随中 A/B 权重按输入样点 `y[j]` 计算，与输出误差 `e[j+m]` 配对；方向公式已用中心有限差分验证。
-- 模型精度只影响方向，不用于预测输出，因此粗拟合即可。默认基 `{1,3,5} x {0,1,2}` 已覆盖强压缩场景；继续加阶数或深度对默认场景改善小于 `0.1 dB`。
-- 收敛稳定边界为 `mu < 2 / lambda_max(J^H J)`，与具体 PA 工作点有关。超出边界时发散是渐进的，不会立即爆炸，但 `mu` 仍应按 PA 严重程度选取。
+#### 2.2.1 FLF 基（`remote_dpd/forward_model.py`）
 
-配置字段（全部严格校验）：
+基函数是 dpd-compass 仓库 FLF（FIR-LUT-FIR）算法的 numpy 移植（见该仓库 `docs/algorithm_design.md` §13 与 `models/flf.py`）。FLF 对系数线性，因此改写为 `z_hat = y + Phi(y) w` 的线性形式后用块状 Gram 正规方程直接求解（dpd-compass 原实现为梯度下降训练，本项目的 LS 变体即为此构建）。结构：
+
+```text
+u[2n]   = y[n]                        # polyphase 0: identity
+u[2n+1] = H1{y}[n]                    # polyphase 1: fixed 9-tap center-aligned FIR
+X_d[n]  = u[2n+r+d]                   # integer tap; half tap -> mean of floor/ceil
+A_d[n]  = |u[2n+r+d]|                 # magnitude FIRST, then average for half taps
+tau_k(a)= triangular hat on grid j/Q  # interior knots k=1..Q-2, endpoints fixed zero,
+                                      # amplitude above (Q-1)/Q -> all hats zero
+q_r[n]  = sum_d alpha[r,d] X_d[n] + sum_t sum_k beta[r,t,k] X_{dx[t]}[n] tau_k(A_{dp[t]}[n])
+z_hat[n]= y[n] + G0{q_0}[2n] + G1{q_1}[2n+1]     # G0 identity, G1 fixed FIR
+```
+
+- tap 集合：`getSMatrixMars(716.5)` 参考 46 对 `(d_x, d_p)`（column-major 展开、去 NaN），按半径嵌套前缀选择 `tap_count ∈ {1, 3, 8, 17, 46}`；独立线性族延迟 `D = unique(d_x)`。系数 `w = (alpha(2,U), beta(2,T,Q-2))`，`U = |D|`、`T = tap_count`，总复列数 `K = 2*(U + T*(Q-2))`（默认 17/32 时 K=1034）。
+- 与 dpd-compass 的两处有意差异：序列边缘用周期 `roll`（本项目 ILC 波形为整周期，周期边界精确；dpd-compass 为 zero-pad + 截断）；系数用 LS 直解而非迭代训练。
+- 幅度网格不做数据归一化（忠实 dpd-compass 语义）。本机记录波形峰值 0.52-0.61，位于 Q=32 网格上界 31/32 内余量充足；候选峰值超出网格时该样点 LUT 贡献置零、恒等项兜底（优雅退化）。
+
+#### 2.2.2 LS 求解
+
+`min_w ||z - y - Phi w||^2 + lambda||w||^2 + lambda_d||D beta||^2`：朴素 Tikhonov `lambda` 防奇异（FLF 基结构性秩亏），`lambda_d` 为 **LUT 差分平滑正则**（`D` 是 beta knot 轴一阶差分，加在 Gram 上即 `Gram + lambda_d D^H D`）。差分正则直接压制 hat 斜率 `dLUT/da = Q(beta_hi - beta_lo)` 被 knot 数放大造成的伴随梯度尖峰：真机数据上朴素正则下种子步梯度尖峰比高达 142（候选峰值超安全限，与 GMP 时代的 `candidate_peak_exceeded` 同类病根），`lambda_d=1e-3` 把尖峰压到 ~9-13 而残差仅损 ~0.1 dB；加大朴素 lambda 压尖峰代价高且非单调。Gram 与右端按每块约 800 万基样点分块累积，`numpy.linalg.solve` 求解、奇异时回退 `lstsq`；基样点或目标能量非有限时 fail-closed 拒绝。
+
+#### 2.2.3 伴随（反向传播）
+
+`g = e + A_Phi^H e + conj(B_Phi^H e)`：恒等项贡献 `e` 直连；FLF 通路链为 `e -> G_r 伴随 -> v_r ->`（每 tap 两条路径：X 信号路径全纯散射，权重 `conj(LUT_{r,t}(A))`；幅度路径权重 `conj(X)·conj(dLUT/da)·(1/2)(u/|u|)` 及其共轭部；半整数 tap 在 floor/ceil 两端点各 0.5）`-> polyphase FIR 伴随 -> y`。非全纯映射必须包含共轭项 `conj(B^H e)`（与 MP 时代结论一致）；方向公式已用中心有限差分与全数值 Jacobian 转置对拍验证（相对误差 ~1e-7，即 FD 精度极限），并作为单元测试保留。
+
+#### 2.2.4 固定点与稳定边界
+
+更新 `y_candidate = y - mu*g`；固定点 `(I + J_Phi)^H e = 0`。稳定边界 `mu < 2 / lambda_max(J^H J)` 与 PA 工作点有关；恒等项使 `lambda_max >= 1`，`mu` 上界不再由病态模型 Jacobian 主导，但高增益工作点仍需相应下调 `mu`。
+
+#### 2.2.5 配置字段
 
 | 字段 | 默认 | 约束 |
 | --- | --- | --- |
 | `mu` | `1.0` | 有限正实数 |
-| `orders` | `[1, 3, 5]` | 1..9 的正奇数、严格升序、至多 5 项 |
-| `memory_depths` | `[0, 1, 2]` | 0..16 的整数、严格升序、至多 8 项 |
-| `ridge` | `1e-8` | `[1e-12, 1e-2]` 内有限实数 |
+| `tap_count` | `17` | `{1, 3, 8, 17, 46}` 之一 |
+| `lut_size` | `32` | 整数 `>= 3` |
+| `ridge` | `1e-8` | `[1e-12, 1e-2]` 内有限实数（朴素，防奇异底） |
+| `lut_ridge` | `1e-3` | `[1e-12, 1e-2]` 内有限实数（LUT 差分平滑） |
 
-`orders x memory_depths` 至多 16 个基项。指标在基础字段（迭代号、步数、`mu`、误差 RMS、候选 RMS）之外增加梯度 RMS、模型拟合残差 RMS 和逐项拟合系数（`p`、`m`、实部、虚部）。runtime 不做缩放、裁剪或预处理，数字安全边界不变。
+`tap_count x lut_size` 组合的复列数上限 6144（46/64=5734 可用；更大的组合被拒绝，防止 Gram 内存失控）。默认 17/32 的取舍依据真机数据离线实验（记录于 `current_plan.md` 2026-09-04 节）：it0 残差 -39.2 dB（MP 基 -27.4、GMP-105 -32.8）、种子步梯度尖峰 ~9、mu=1.0 候选峰 0.766、全长拟合 ~35 s；46/32 残差 -41.4 dB 但拟合 ~105 s 超真机每轮周期，留作显式配置。
+
+配置字段相对旧版（`orders/memory_depths/ridge`）为**破坏性变更**：旧显式配置会被未知字段检查拒绝；Web/file 快速启动只传 `mu`，不受影响。
+
+#### 2.2.6 指标
+
+在基础字段（迭代号、步数、`mu`、误差 RMS、候选 RMS）之外输出梯度 RMS、模型拟合残差 RMS（对 `z` 的残差，语义与旧版一致）和 `model_coefficients` 摘要：`alpha` 全量 2×U 复系数（`phase/delay/real/imag`）+ `beta` 的 `count/rms/max`（beta 可达数千系数，逐项输出对逐轮 JSON 过重，且旧 `model_terms` 字段无下游消费方）。runtime 不做缩放、裁剪或预处理，数字安全边界不变。
 
 ## 3. 注册表
 

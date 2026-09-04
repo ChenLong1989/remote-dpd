@@ -243,198 +243,18 @@ class BasicILCRuntime(DPDRuntime):
         )
 
 
-_FORWARD_MODEL_DEFAULT_ORDERS: tuple[int, ...] = (1, 3, 5)
-_FORWARD_MODEL_DEFAULT_MEMORY_DEPTHS: tuple[int, ...] = (0, 1, 2)
+_FORWARD_MODEL_DEFAULT_TAP_COUNT = 17
+_FORWARD_MODEL_DEFAULT_LUT_SIZE = 32
+# Plain Tikhonov floor: the FLF basis is structurally rank-deficient, so the
+# solve always needs a small identity term; the LUT difference penalty is the
+# regularization that actually shapes the coefficients.
 _FORWARD_MODEL_DEFAULT_RIDGE = 1e-8
-_FORWARD_MODEL_MAX_ORDER = 9
-_FORWARD_MODEL_MAX_MEMORY_DEPTH = 16
-_FORWARD_MODEL_MAX_ORDERS = 5
-_FORWARD_MODEL_MAX_MEMORY_DEPTHS = 8
-_FORWARD_MODEL_MAX_BASIS_TERMS = 16
+_FORWARD_MODEL_DEFAULT_LUT_RIDGE = 1e-3
 _FORWARD_MODEL_RIDGE_MIN = 1e-12
 _FORWARD_MODEL_RIDGE_MAX = 1e-2
-# Upper bound on basis samples held at once while fitting, so the memory cost
-# stays bounded for very long waveforms instead of scaling with N * basis size.
-_FORWARD_MODEL_BLOCK_TERMS = 8_000_000
-
-
-@dataclass(frozen=True, slots=True)
-class _BasisTerm:
-    """One memory-polynomial basis term: y[n-m] * |y[n-m]|**(order-1)."""
-
-    order: int
-    memory: int
-
-
-@dataclass(frozen=True, slots=True)
-class _ForwardModelFit:
-    """Least-squares fit of the forward model on one (y, z) pair."""
-
-    terms: tuple[_BasisTerm, ...]
-    coefficients: np.ndarray
-    residual_rms: float
-
-
-def _basis_column(signal: np.ndarray, term: _BasisTerm) -> np.ndarray:
-    """Full-signal periodic basis column for one term."""
-
-    delayed = np.roll(signal, term.memory)
-    return delayed * np.abs(delayed) ** (term.order - 1)
-
-
-def _basis_column_block(
-    signal: np.ndarray,
-    start: int,
-    stop: int,
-    term: _BasisTerm,
-) -> np.ndarray:
-    """Basis column restricted to [start, stop) with whole-signal periodicity."""
-
-    indices = (np.arange(start, stop) - term.memory) % signal.size
-    delayed = signal[indices]
-    return delayed * np.abs(delayed) ** (term.order - 1)
-
-
-def _validate_integer_list(
-    name: str,
-    value: Any,
-    *,
-    max_items: int,
-    minimum: int,
-    maximum: int,
-    odd_only: bool,
-) -> tuple[int, ...]:
-    """Validate a strictly ascending bounded integer list."""
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise RuntimeConfigurationError(f"{name} must be a list of integers")
-    if not value:
-        raise RuntimeConfigurationError(f"{name} must contain at least one entry")
-    if len(value) > max_items:
-        raise RuntimeConfigurationError(
-            f"{name} must contain at most {max_items} entries; got {len(value)}"
-        )
-    normalized: list[int] = []
-    previous: int | None = None
-    for item in value:
-        if isinstance(item, (bool, np.bool_)) or not isinstance(item, numbers.Integral):
-            raise RuntimeConfigurationError(f"{name} entries must be integers")
-        entry = int(item)
-        if not minimum <= entry <= maximum or (odd_only and entry % 2 == 0):
-            bound = (
-                f"positive odd integers up to {maximum}"
-                if odd_only
-                else f"integers within [{minimum}, {maximum}]"
-            )
-            raise RuntimeConfigurationError(
-                f"{name} entries must be {bound}; got {entry}"
-            )
-        if previous is not None and entry <= previous:
-            raise RuntimeConfigurationError(f"{name} must be strictly ascending")
-        normalized.append(entry)
-        previous = entry
-    return tuple(normalized)
-
-
-def _fit_memory_polynomial(
-    y: np.ndarray,
-    z: np.ndarray,
-    orders: tuple[int, ...],
-    memory_depths: tuple[int, ...],
-    ridge: float,
-) -> _ForwardModelFit:
-    """Fit z ~ sum c_k * basis_k(y) by ridge-regularized complex least squares.
-
-    Columns are RMS-normalized before solving so the relative ridge is
-    scale-invariant; the Gram matrix and right-hand side are accumulated
-    blockwise to bound peak memory for long waveforms. All-zero columns are
-    dropped with a zero coefficient instead of dividing by a zero scale.
-    """
-    terms = tuple(
-        _BasisTerm(order, order_memory)
-        for order in orders
-        for order_memory in memory_depths
-    )
-    count = len(terms)
-    total = y.size
-    gram = np.zeros((count, count), dtype=np.complex128)
-    rhs = np.zeros(count, dtype=np.complex128)
-    column_energy = np.zeros(count, dtype=np.float64)
-    z_energy = float(np.vdot(z, z).real)
-    block = max(1, _FORWARD_MODEL_BLOCK_TERMS // count)
-    for start in range(0, total, block):
-        stop = min(start + block, total)
-        z_segment = z[start:stop]
-        columns = [_basis_column_block(y, start, stop, term) for term in terms]
-        for i in range(count):
-            column = columns[i]
-            column_energy[i] += float(np.vdot(column, column).real)
-            rhs[i] += np.vdot(column, z_segment)
-            for j in range(i, count):
-                value = np.vdot(column, columns[j])
-                gram[i, j] += value
-                if j != i:
-                    gram[j, i] += np.conj(value)
-
-    # An overflowing basis column must fail closed: silently dropping it
-    # (the scales > 0 filter also drops non-finite energies) would return a
-    # finite candidate from a degenerate low-order model.
-    if not np.all(np.isfinite(column_energy)) or not math.isfinite(z_energy):
-        raise RuntimeInputError(
-            "forward model basis overflowed for this input scale"
-        )
-    scales = np.sqrt(column_energy / total)
-    active = np.nonzero(scales > 0.0)[0]
-    coefficients = np.zeros(count, dtype=np.complex128)
-    if active.size:
-        idx = active[:, None], active[None, :]
-        reduced = gram[idx] / (scales[active][:, None] * scales[active][None, :])
-        reduced[np.diag_indices_from(reduced)] += ridge * total
-        reduced_rhs = rhs[active] / scales[active]
-        try:
-            normalized = np.linalg.solve(reduced, reduced_rhs)
-        except np.linalg.LinAlgError:
-            normalized = np.linalg.lstsq(reduced, reduced_rhs, rcond=None)[0]
-        coefficients[active] = normalized / scales[active]
-
-    model_energy = float(np.vdot(coefficients, gram @ coefficients).real)
-    cross_energy = 2.0 * float(np.vdot(coefficients, rhs).real)
-    residual_energy = max(0.0, z_energy - cross_energy + model_energy)
-    return _ForwardModelFit(
-        terms=terms,
-        coefficients=coefficients,
-        residual_rms=math.sqrt(residual_energy / total),
-    )
-
-
-def _adjoint_gradient(
-    y: np.ndarray,
-    error: np.ndarray,
-    fit: _ForwardModelFit,
-) -> np.ndarray:
-    """Map the output error to the PA input through the fitted model Jacobian.
-
-    For the non-holomorphic map z = F(y, y*) the steepest-descent direction of
-    ||F(y) - x||^2 over the real (Re, Im) parameterization is
-    A^H e + conj(B^H e), where A = dF/dy and B = dF/dy*. Both parts are
-    required: dropping the conjugated B term tilts the direction enough to
-    stall convergence for deeply compressed amplifiers.
-    """
-    gradient = np.zeros_like(y)
-    magnitude = np.abs(y)
-    conjugate_squared = np.conj(y) ** 2
-    for term, coefficient in zip(fit.terms, fit.coefficients):
-        if coefficient == 0.0:
-            continue
-        order = term.order
-        # The derivative weight at input index j uses y[j] itself; the error
-        # it pairs with sits at output index j + memory.
-        shifted_error = np.roll(error, -term.memory)
-        a_weight = (order + 1) / 2.0 * magnitude ** (order - 1)
-        gradient += np.conj(coefficient) * a_weight * shifted_error
-        if order > 1:
-            b_weight = (order - 1) / 2.0 * conjugate_squared * magnitude ** (order - 3)
-            gradient += coefficient * np.conj(b_weight * shifted_error)
-    return gradient
+# Upper bound on the complex column count so a misconfigured ladder cannot
+# allocate a prohibitive Gram matrix (46 taps x 64 knots -> 5734 columns).
+_FORWARD_MODEL_MAX_COLUMNS = 6144
 
 
 class ForwardModelILCRuntime(DPDRuntime):
@@ -444,10 +264,17 @@ class ForwardModelILCRuntime(DPDRuntime):
     propagates the feedback error to the PA input unchanged. Under deep gain
     compression that direction is wrong (the local slope approaches zero and
     can turn negative), which slows convergence and eventually diverges. This
-    runtime first fits a complex memory-polynomial forward model on the current
-    (y, z) pair with a plain least-squares solve, then back-propagates the
-    error through the fitted Jacobian and applies the resulting gradient. Model
-    accuracy only shapes the direction, so a coarse fit is sufficient.
+    runtime instead fits a residual FIR-LUT-FIR forward model
+    ``z ~ y + Phi(y) w`` (ported from dpd-compass, see
+    ``remote_dpd/forward_model.py``) on the current (y, z) pair with a
+    regularized least-squares solve, then back-propagates the error through
+    the fitted Jacobian and applies the resulting gradient.
+
+    The identity term is part of the model, not of the basis: the fitted
+    Jacobian always contains it, so the ILC fixed point stays at
+    ``(I + J_Phi)^H e = 0`` instead of drifting with model mismatch, and the
+    update degrades continuously to basic ILC as the basis coefficients
+    shrink toward zero.
     """
 
     name = "forward_model_ilc"
@@ -456,8 +283,22 @@ class ForwardModelILCRuntime(DPDRuntime):
         super().__init__()
         self._step_count = 0
 
+    @staticmethod
+    def _flf_model(tap_count: int, lut_size: int):
+        # Imported lazily: forward_model imports RuntimeInputError from this
+        # module, so a top-level import would be circular.
+        from remote_dpd.forward_model import FLFResidualModel
+
+        return FLFResidualModel(tap_count, lut_size)
+
     def _prepare_config(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
-        unknown = set(config) - {"mu", "orders", "memory_depths", "ridge"}
+        unknown = set(config) - {
+            "mu",
+            "tap_count",
+            "lut_size",
+            "ridge",
+            "lut_ridge",
+        }
         if unknown:
             raise RuntimeConfigurationError(
                 f"unsupported Forward Model ILC config fields: {sorted(unknown)}"
@@ -469,49 +310,65 @@ class ForwardModelILCRuntime(DPDRuntime):
         if not math.isfinite(mu) or mu <= 0.0:
             raise RuntimeConfigurationError("mu must be a finite positive real scalar")
 
-        orders = config.get("orders", _FORWARD_MODEL_DEFAULT_ORDERS)
-        memory_depths = config.get(
-            "memory_depths", _FORWARD_MODEL_DEFAULT_MEMORY_DEPTHS
-        )
-        orders_tuple = _validate_integer_list(
-            "orders",
-            orders,
-            max_items=_FORWARD_MODEL_MAX_ORDERS,
-            minimum=1,
-            maximum=_FORWARD_MODEL_MAX_ORDER,
-            odd_only=True,
-        )
-        memory_tuple = _validate_integer_list(
-            "memory_depths",
-            memory_depths,
-            max_items=_FORWARD_MODEL_MAX_MEMORY_DEPTHS,
-            minimum=0,
-            maximum=_FORWARD_MODEL_MAX_MEMORY_DEPTH,
-            odd_only=False,
-        )
-        if len(orders_tuple) * len(memory_tuple) > _FORWARD_MODEL_MAX_BASIS_TERMS:
+        from remote_dpd.forward_model import TAP_COUNTS
+
+        tap_count = config.get("tap_count", _FORWARD_MODEL_DEFAULT_TAP_COUNT)
+        if isinstance(tap_count, (bool, np.bool_)) or not isinstance(tap_count, numbers.Integral):
             raise RuntimeConfigurationError(
-                "orders x memory_depths must produce at most "
-                f"{_FORWARD_MODEL_MAX_BASIS_TERMS} basis terms; "
-                f"got {len(orders_tuple) * len(memory_tuple)}"
+                f"tap_count must be one of {TAP_COUNTS}"
+            )
+        tap_count = int(tap_count)
+        if tap_count not in TAP_COUNTS:
+            raise RuntimeConfigurationError(
+                f"tap_count must be one of {TAP_COUNTS}; got {tap_count}"
             )
 
-        ridge = config.get("ridge", _FORWARD_MODEL_DEFAULT_RIDGE)
-        if isinstance(ridge, (bool, np.bool_)) or not isinstance(ridge, numbers.Real):
-            raise RuntimeConfigurationError("ridge must be a finite real scalar")
-        ridge = float(ridge)
-        if not math.isfinite(ridge) or not (
-            _FORWARD_MODEL_RIDGE_MIN <= ridge <= _FORWARD_MODEL_RIDGE_MAX
+        lut_size = config.get("lut_size", _FORWARD_MODEL_DEFAULT_LUT_SIZE)
+        if (
+            isinstance(lut_size, (bool, np.bool_))
+            or not isinstance(lut_size, numbers.Integral)
+            or int(lut_size) < 3
         ):
             raise RuntimeConfigurationError(
-                f"ridge must be within [{_FORWARD_MODEL_RIDGE_MIN:g}, "
-                f"{_FORWARD_MODEL_RIDGE_MAX:g}]"
+                f"lut_size must be an integer >= 3; got {lut_size!r}"
             )
+        lut_size = int(lut_size)
+
+        columns = self._flf_model(tap_count, lut_size).n_columns()
+        if columns > _FORWARD_MODEL_MAX_COLUMNS:
+            raise RuntimeConfigurationError(
+                "tap_count x lut_size must produce at most "
+                f"{_FORWARD_MODEL_MAX_COLUMNS} basis columns; got {columns}"
+            )
+
+        validated: dict[str, float] = {}
+        for field in ("ridge", "lut_ridge"):
+            value = config.get(
+                field,
+                _FORWARD_MODEL_DEFAULT_RIDGE
+                if field == "ridge"
+                else _FORWARD_MODEL_DEFAULT_LUT_RIDGE,
+            )
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+                raise RuntimeConfigurationError(
+                    f"{field} must be a finite real scalar"
+                )
+            value = float(value)
+            if not math.isfinite(value) or not (
+                _FORWARD_MODEL_RIDGE_MIN <= value <= _FORWARD_MODEL_RIDGE_MAX
+            ):
+                raise RuntimeConfigurationError(
+                    f"{field} must be within "
+                    f"[{_FORWARD_MODEL_RIDGE_MIN:g}, {_FORWARD_MODEL_RIDGE_MAX:g}]"
+                )
+            validated[field] = value
+
         return {
             "mu": mu,
-            "orders": orders_tuple,
-            "memory_depths": memory_tuple,
-            "ridge": ridge,
+            "tap_count": tap_count,
+            "lut_size": lut_size,
+            "ridge": validated["ridge"],
+            "lut_ridge": validated["lut_ridge"],
         }
 
     def _on_initialize(self, config: Mapping[str, Any]) -> None:
@@ -526,16 +383,14 @@ class ForwardModelILCRuntime(DPDRuntime):
         config: Mapping[str, Any],
     ) -> RuntimeStepResult:
         mu = float(config["mu"])
-        orders = tuple(int(value) for value in config["orders"])
-        memory_depths = tuple(int(value) for value in config["memory_depths"])
-        ridge = float(config["ridge"])
+        model = self._flf_model(int(config["tap_count"]), int(config["lut_size"]))
         y = step_input.y_current
         error = step_input.z_current - step_input.x
         with np.errstate(over="ignore", invalid="ignore"):
-            fit = _fit_memory_polynomial(
-                y, step_input.z_current, orders, memory_depths, ridge
+            fit = model.fit(
+                y, step_input.z_current, float(config["ridge"]), float(config["lut_ridge"])
             )
-            gradient = _adjoint_gradient(y, error, fit)
+            gradient = model.adjoint(y, error, fit.coefficients)
             candidate = y - mu * gradient
         if not np.all(np.isfinite(candidate)):
             raise RuntimeInputError(
@@ -553,17 +408,40 @@ class ForwardModelILCRuntime(DPDRuntime):
                 "candidate_rms": _rms(candidate),
                 "gradient_rms": _rms(gradient),
                 "model_residual_rms": fit.residual_rms,
-                "model_terms": [
-                    {
-                        "p": term.order,
-                        "m": term.memory,
-                        "real": float(coefficient.real),
-                        "imag": float(coefficient.imag),
-                    }
-                    for term, coefficient in zip(fit.terms, fit.coefficients)
-                ],
+                "model_coefficients": _coefficient_summary(model, fit),
             },
         )
+
+
+def _coefficient_summary(model, fit) -> Mapping[str, Any]:
+    """Compact fit summary: full alpha block plus beta magnitude statistics.
+
+    The beta block holds up to a few thousand complex numbers, which is too
+    heavy for per-iteration JSON metrics, so it is reduced to moments.
+    """
+    coefficients = fit.coefficients
+    linear = 2 * model.linear_count
+    alpha = coefficients[:linear]
+    beta = coefficients[linear:]
+    beta_magnitudes = np.abs(beta)
+    return {
+        "tap_count": model.tap_count,
+        "lut_size": model.lut_size,
+        "columns": int(coefficients.size),
+        "alpha": [
+            {
+                "phase": phase,
+                "delay": delay,
+                "real": float(value.real),
+                "imag": float(value.imag),
+            }
+            for phase in (0, 1)
+            for delay, value in zip(model.linear_taps, alpha[model.linear_count * phase : model.linear_count * (phase + 1)])
+        ],
+        "beta_count": int(beta.size),
+        "beta_rms": float(np.sqrt(np.mean(beta_magnitudes**2))) if beta.size else 0.0,
+        "beta_max": float(np.max(beta_magnitudes)) if beta.size else 0.0,
+    }
 
 
 _RUNTIME_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")

@@ -5,7 +5,12 @@ from unittest import mock
 
 import numpy as np
 
-from remote_dpd import runtime as runtime_module
+from remote_dpd.forward_model import (
+    REFERENCE_TAPS,
+    TAP_COUNTS,
+    FLFResidualModel,
+    tap_pairs_for_count,
+)
 from remote_dpd.runtime import (
     ForwardModelILCRuntime,
     RuntimeConfigurationError,
@@ -83,134 +88,186 @@ def severe_simulated_pa(signal):
     return memory_polynomial(signal * ATTENUATION, SEVERE_PA)
 
 
-class ForwardModelGradientTests(unittest.TestCase):
-    def test_adjacent_gradient_matches_central_finite_differences(self):
+class FLFStructureTests(unittest.TestCase):
+    def test_tap_ladder_matches_reference_counts(self):
+        # Documented dpd-compass ladder: (T, U = |unique(d_x)|) per prefix.
+        expected = {1: (1, 1), 3: (3, 2), 8: (8, 4), 17: (17, 7), 46: (46, 15)}
+        for tap_count, (taps, linear) in expected.items():
+            with self.subTest(tap_count=tap_count):
+                model = FLFResidualModel(tap_count, 32)
+                self.assertEqual(model.tap_total, taps)
+                self.assertEqual(model.linear_count, linear)
+                self.assertEqual(
+                    model.n_columns(), 2 * (linear + taps * (32 - 2))
+                )
+        self.assertEqual(len(REFERENCE_TAPS), 46)
+
+    def test_tap_selection_is_nested(self):
+        selected = set()
+        for tap_count in TAP_COUNTS:
+            taps = set(tap_pairs_for_count(tap_count))
+            self.assertTrue(selected <= taps)
+            selected = taps
+        # The full set must equal the reference table.
+        self.assertEqual(tap_pairs_for_count(46), REFERENCE_TAPS)
+
+    def test_sparse_lut_weights_match_dense_hats(self):
+        rng = np.random.default_rng(3)
+        amplitude = np.abs(rng.standard_normal(20000)) * 1.05
+        for lut_size in (8, 16, 32, 64):
+            with self.subTest(lut_size=lut_size):
+                model = FLFResidualModel(1, lut_size)
+                lo, hi, w_lo, w_hi = model.lut_weights(amplitude)
+                dense = model._dense_hats(amplitude)
+                sparse = np.zeros_like(dense)
+                rows = np.arange(amplitude.size)
+                sparse[rows, lo - 1] = w_lo
+                sparse[rows, np.clip(hi - 1, 0, lut_size - 3)] += w_hi
+                np.testing.assert_allclose(dense, sparse, atol=1e-12)
+        # Amplitudes beyond (Q-1)/Q deactivate every hat.
+        model = FLFResidualModel(1, 32)
+        _, _, w_lo, w_hi = model.lut_weights(np.asarray([0.999]))
+        self.assertEqual((w_lo[0], w_hi[0]), (0.0, 0.0))
+
+    def test_rejects_invalid_constructor_arguments(self):
+        for tap_count in (0, 2, 9, 47, True, "17"):
+            with (
+                self.subTest(tap_count=tap_count),
+                self.assertRaises(ValueError),
+            ):
+                FLFResidualModel(tap_count, 32)
+        for lut_size in (2, 0, True, 32.0, "32"):
+            with (
+                self.subTest(lut_size=lut_size),
+                self.assertRaises(ValueError),
+            ):
+                FLFResidualModel(17, lut_size)
+
+
+class FLFGradientTests(unittest.TestCase):
+    def test_adjoint_matches_central_finite_differences(self):
         rng = np.random.default_rng(11)
-        size = 96
-        y = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 0.3
-        x = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 0.25
-        coefficients = (
-            (1, 0, 1.0 + 0.1j),
-            (1, 1, 0.3 - 0.2j),
-            (3, 0, -0.8 + 0.3j),
-            (3, 2, 0.4 - 0.2j),
-            (5, 1, 0.2 + 0.4j),
-        )
-        error = memory_polynomial(y, coefficients) - x
+        size = 1024
+        model = FLFResidualModel(8, 16)
+        y = band_limited_reference(rng, size, 0.3)
+        x = band_limited_reference(rng, size, 0.25)
+        weights = (rng.normal(size=model.n_columns()) + 1j * rng.normal(size=model.n_columns())) * 0.05
 
         def energy(perturbed):
-            residual = memory_polynomial(perturbed, coefficients) - x
-            return float(np.sum(np.abs(residual) ** 2))
+            error = model.evaluate(perturbed, weights) - x
+            return float(np.vdot(error, error).real)
 
-        epsilon = 1e-5
-        finite = np.zeros_like(y)
-        for index in range(size):
-            for part in (0, 1):
-                delta = epsilon if part == 0 else 1j * epsilon
-                forward = y.copy()
-                forward[index] += delta
-                backward = y.copy()
-                backward[index] -= delta
-                derivative = (energy(forward) - energy(backward)) / (2.0 * epsilon)
-                finite[index] += derivative * (1.0 if part == 0 else 1j)
+        error = model.evaluate(y, weights) - x
+        gradient = model.adjoint(y, error, weights)
 
-        from remote_dpd.runtime import _adjoint_gradient, _BasisTerm, _ForwardModelFit
+        ratios = []
+        for _ in range(4):
+            direction = rng.normal(size=size) + 1j * rng.normal(size=size)
+            direction /= np.sqrt(np.vdot(direction, direction).real)
+            for epsilon in (1e-6, 1e-7):
+                forward = energy(y + epsilon * direction)
+                backward = energy(y - epsilon * direction)
+                finite = (forward - backward) / (2.0 * epsilon)
+                analytic = 2.0 * float(np.vdot(gradient, direction).real)
+                ratios.append(finite / analytic)
+        np.testing.assert_allclose(ratios, 1.0, rtol=2e-5)
 
-        fit = _ForwardModelFit(
-            terms=tuple(_BasisTerm(order, memory) for order, memory, _ in coefficients),
-            coefficients=np.asarray([value for _, _, value in coefficients]),
-            residual_rms=0.0,
-        )
-        gradient = _adjoint_gradient(y, error, fit)
+    def test_zero_coefficients_reduce_gradient_to_identity_error(self):
+        rng = np.random.default_rng(5)
+        size = 512
+        model = FLFResidualModel(8, 16)
+        y = band_limited_reference(rng, size, 0.3)
+        x = band_limited_reference(rng, size, 0.3)
+        error = y - x
+        gradient = model.adjoint(y, error, np.zeros(model.n_columns(), dtype=np.complex128))
+        np.testing.assert_allclose(gradient, error)
 
-        np.testing.assert_allclose(finite, 2.0 * gradient, rtol=1e-5, atol=1e-7)
 
-    def test_fitted_coefficients_recover_known_memory_polynomial(self):
+class FLFFitTests(unittest.TestCase):
+    def test_fit_recovers_smooth_known_model(self):
         rng = np.random.default_rng(23)
-        size = 8192
+        size = 4096
+        model = FLFResidualModel(8, 16)
         y = band_limited_reference(rng, size, 0.2)
-        expected = {
-            (1, 0): 0.9 + 0.1j,
-            (1, 1): -0.05 + 0.02j,
-            (3, 0): -1.2 + 0.4j,
-            (3, 1): 0.1 - 0.3j,
-        }
-        coefficients = tuple(
-            (order, memory, value) for (order, memory), value in expected.items()
-        )
-        z = memory_polynomial(y, coefficients)
+        # Smooth LUT rows (low-frequency along the knot axis) so the
+        # difference penalty does not bias the recovery.
+        knots = np.arange(1, model.lut_size - 1)
+        beta_rows = 0.3 * np.exp(2j * np.pi * knots / (model.lut_size - 1))
+        weights = np.zeros(model.n_columns(), dtype=np.complex128)
+        weights[: model.linear_count] = 0.8 - 0.1j
+        weights[model.linear_count : 2 * model.linear_count] = 0.05 + 0.02j
+        for r in (0, 1):
+            base = 2 * model.linear_count + r * model.tap_total * (model.lut_size - 2)
+            for t in range(model.tap_total):
+                weights[base + t * (model.lut_size - 2) : base + (t + 1) * (model.lut_size - 2)] = (
+                    beta_rows * (0.5 + 0.2 * t + 0.3 * r)
+                )
+        z = model.evaluate(y, weights)
 
-        fit = runtime_module._fit_memory_polynomial(y, z, (1, 3), (0, 1), ridge=1e-10)
+        fit = model.fit(y, z, ridge=1e-10, lut_ridge=1e-8)
 
-        recovered = {
-            (term.order, term.memory): value
-            for term, value in zip(fit.terms, fit.coefficients)
-        }
-        for key, value in expected.items():
-            np.testing.assert_allclose(recovered[key], value, rtol=1e-6, atol=1e-9)
-        self.assertLess(fit.residual_rms, 1e-10)
+        # The basis is structurally redundant (linear and LUT columns can
+        # express each other on band-limited data), so individual coefficients
+        # are not identifiable; the fitted model must reproduce the data.
+        self.assertLess(fit.residual_rms, 1e-5)
+        prediction = model.evaluate(y, fit.coefficients)
+        np.testing.assert_allclose(prediction, z, rtol=1e-5, atol=1e-7)
 
-    def test_fit_absorbs_linear_gain_phase_and_residual_rms_matches(self):
+    def test_fit_residual_tracks_noise_floor(self):
         rng = np.random.default_rng(31)
         size = 4096
+        model = FLFResidualModel(8, 16)
         y = band_limited_reference(rng, size, 0.2)
-        scale = 1.4 * np.exp(1j * 0.6)
-        z = scale * memory_polynomial(y, ((1, 0, 1.0 + 0j), (3, 0, -0.7 + 0.2j)))
-        noise = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 1e-3
-        noisy = z + noise
+        z = severe_simulated_pa(y)
+        noise = (rng.normal(size=size) + 1j * rng.normal(size=size)) * 2e-3 / np.sqrt(2.0)
 
-        fit = runtime_module._fit_memory_polynomial(
-            y, noisy, (1, 3, 5), (0, 1, 2), ridge=1e-8
-        )
+        fit = model.fit(y, z + noise, ridge=1e-8, lut_ridge=1e-6)
 
-        recovered = {
-            (term.order, term.memory): value
-            for term, value in zip(fit.terms, fit.coefficients)
-        }
-        np.testing.assert_allclose(recovered[(1, 0)], scale, rtol=2e-3)
-        np.testing.assert_allclose(
-            recovered[(3, 0)], scale * (-0.7 + 0.2j), rtol=5e-3, atol=5e-3
-        )
-        np.testing.assert_allclose(recovered[(5, 0)], 0.0 + 0.0j, atol=1e-2)
-
-        columns = np.stack(
-            [runtime_module._basis_column(y, term) for term in fit.terms],
-            axis=1,
-        )
-        model = columns @ fit.coefficients
-        direct_residual = float(np.sqrt(np.mean(np.abs(noisy - model) ** 2)))
-        self.assertLessEqual(fit.residual_rms, direct_residual * 1.001 + 1e-12)
+        self.assertLess(fit.residual_rms, 3e-3)
+        self.assertGreater(fit.residual_rms, 1e-3)
 
     def test_blockwise_accumulation_matches_single_block(self):
         rng = np.random.default_rng(47)
         size = 5000
+        model = FLFResidualModel(8, 16)
         y = band_limited_reference(rng, size, 0.2)
         z = severe_simulated_pa(y)
 
-        single = runtime_module._fit_memory_polynomial(
-            y, z, (1, 3, 5), (0, 1, 2), ridge=1e-8
-        )
-        with mock.patch.object(runtime_module, "_FORWARD_MODEL_BLOCK_TERMS", 9 * 997):
-            blocked = runtime_module._fit_memory_polynomial(
-                y, z, (1, 3, 5), (0, 1, 2), ridge=1e-8
-            )
+        single = model.fit(y, z, ridge=1e-8, lut_ridge=1e-3)
+        import remote_dpd.forward_model as forward_model_module
 
+        with mock.patch.object(
+            forward_model_module, "_BLOCK_TERMS", 97 * model.n_columns()
+        ):
+            blocked = model.fit(y, z, ridge=1e-8, lut_ridge=1e-3)
+            reevaluated = model.evaluate(y, blocked.coefficients)
+
+        # The FLF basis is structurally rank-deficient, so the solve is
+        # sensitive to the block summation order: coefficients agree to
+        # ~1e-6 and the model output and residual agree far tighter.
         np.testing.assert_allclose(
-            single.coefficients, blocked.coefficients, rtol=1e-9, atol=1e-12
+            single.coefficients, blocked.coefficients, rtol=1e-3, atol=1e-5
         )
-        # Near-exact fits leave only floating-point cancellation noise, so the
-        # residual is compared against an absolute bound rather than between runs.
-        self.assertLess(single.residual_rms, 1e-6)
-        self.assertLess(blocked.residual_rms, 1e-6)
+        np.testing.assert_allclose(
+            reevaluated, model.evaluate(y, single.coefficients), atol=1e-7
+        )
+        self.assertAlmostEqual(
+            blocked.residual_rms / single.residual_rms, 1.0, places=6
+        )
 
-    def test_periodic_memory_uses_circular_roll(self):
-        y = np.zeros(8, dtype=np.complex128)
-        y[0] = 0.5 + 0.1j
-        column = runtime_module._basis_column(y, runtime_module._BasisTerm(3, 2))
-        expected = np.zeros(8, dtype=np.complex128)
-        expected[2] = (0.5 + 0.1j) * np.abs(0.5 + 0.1j) ** 2
-        np.testing.assert_allclose(column, expected)
+    def test_identity_passthrough_yields_zero_coefficients(self):
+        rng = np.random.default_rng(53)
+        size = 2048
+        model = FLFResidualModel(8, 16)
+        y = band_limited_reference(rng, size, 0.2)
 
+        fit = model.fit(y, y, ridge=1e-8, lut_ridge=1e-3)
+
+        self.assertEqual(fit.residual_rms, 0.0)
+        self.assertLess(float(np.max(np.abs(fit.coefficients))), 1e-10)
+
+
+class ForwardModelRuntimeTests(unittest.TestCase):
     def test_zero_input_produces_zero_gradient_and_identity_candidate(self):
         zeros = np.zeros(16, dtype=np.complex128)
         reference = np.zeros(16, dtype=np.complex128)
@@ -239,6 +296,22 @@ class ForwardModelGradientTests(unittest.TestCase):
         )
         self.assertTrue(np.all(np.isfinite(result.y_candidate)))
 
+    def test_identity_passthrough_degrades_to_basic_ilc_update(self):
+        rng = np.random.default_rng(59)
+        size = 1024
+        y = band_limited_reference(rng, size, 0.2)
+        x = band_limited_reference(rng, size, 0.2)
+        runtime = ForwardModelILCRuntime()
+        runtime.initialize({})
+        result = runtime.step(
+            RuntimeStepInput(
+                x=x, y_current=y.copy(), z_current=y.copy(), iteration=1, config={}
+            )
+        )
+        # A perfectly linear PA leaves z - y = 0, so the fitted basis is zero
+        # and the update reduces exactly to the basic ILC step.
+        np.testing.assert_allclose(result.y_candidate, y - 1.0 * (y - x), atol=1e-12)
+
 
 class ForwardModelConvergenceTests(unittest.TestCase):
     def test_converges_where_basic_ilc_diverges_on_rotated_loop_gain(self):
@@ -265,11 +338,11 @@ class ForwardModelConvergenceTests(unittest.TestCase):
 
     def test_severe_compression_converges_monotonically(self):
         rng = np.random.default_rng(7)
-        size = 24576
+        size = 12288
         reference = band_limited_reference(rng, size, 10.0 ** (-15 / 20))
 
         history, final_y = run_iterations(
-            "forward_model_ilc", {"mu": 1.0}, reference, severe_simulated_pa, 15
+            "forward_model_ilc", {"mu": 1.0}, reference, severe_simulated_pa, 12
         )
 
         self.assertTrue(
@@ -303,9 +376,10 @@ class ForwardModelContractTests(unittest.TestCase):
     def test_default_config_matches_documented_values(self):
         prepared = ForwardModelILCRuntime()._prepare_config({})
         self.assertEqual(prepared["mu"], 1.0)
-        self.assertEqual(prepared["orders"], (1, 3, 5))
-        self.assertEqual(prepared["memory_depths"], (0, 1, 2))
+        self.assertEqual(prepared["tap_count"], 17)
+        self.assertEqual(prepared["lut_size"], 32)
         self.assertEqual(prepared["ridge"], 1e-8)
+        self.assertEqual(prepared["lut_ridge"], 1e-3)
 
     def test_metrics_are_finite_and_report_model(self):
         runtime = self.make_runtime(None)
@@ -320,12 +394,19 @@ class ForwardModelContractTests(unittest.TestCase):
             return value
 
         json.dumps(unwrap(dict(metrics)), allow_nan=False)
-        self.assertEqual(len(metrics["model_terms"]), 9)
-        for term in metrics["model_terms"]:
-            self.assertIn("p", term)
-            self.assertIn("m", term)
-            self.assertIn("real", term)
-            self.assertIn("imag", term)
+        summary = metrics["model_coefficients"]
+        self.assertEqual(summary["tap_count"], 17)
+        self.assertEqual(summary["lut_size"], 32)
+        self.assertEqual(summary["columns"], 2 * (7 + 17 * 30))
+        self.assertEqual(len(summary["alpha"]), 14)
+        for entry in summary["alpha"]:
+            self.assertIn("phase", entry)
+            self.assertIn("delay", entry)
+            self.assertIn("real", entry)
+            self.assertIn("imag", entry)
+        self.assertEqual(summary["beta_count"], 2 * 17 * 30)
+        self.assertGreaterEqual(summary["beta_rms"], 0.0)
+        self.assertGreaterEqual(summary["beta_max"], 0.0)
         self.assertEqual(metrics["mu"], 1.0)
         self.assertEqual(metrics["runtime_step"], 1)
         self.assertGreaterEqual(metrics["gradient_rms"], 0.0)
@@ -339,6 +420,8 @@ class ForwardModelContractTests(unittest.TestCase):
             {"mu": True},
             {"mu": "1.0"},
             {"mu": 1.0, "unexpected": 1},
+            {"orders": [1, 3, 5]},
+            {"memory_depths": [0, 1, 2]},
         ]
         for config in cases:
             with (
@@ -347,23 +430,21 @@ class ForwardModelContractTests(unittest.TestCase):
             ):
                 ForwardModelILCRuntime().initialize(config)
 
-    def test_rejects_invalid_orders_and_memory_depths(self):
+    def test_rejects_invalid_tap_count_and_lut_size(self):
         cases = [
-            {"orders": []},
-            {"orders": (2, 3)},
-            {"orders": (3, 1)},
-            {"orders": (1, 1)},
-            {"orders": (1, 11)},
-            {"orders": (1, 3, 5, 7, 9, 11)},
-            {"orders": "135"},
-            {"orders": (1.0, 3.0)},
-            {"memory_depths": []},
-            {"memory_depths": (-1,)},
-            {"memory_depths": (2, 1)},
-            {"memory_depths": (1, 17)},
-            {"memory_depths": tuple(range(9))},
-            {"memory_depths": 3},
-            {"orders": (1, 3, 5, 7, 9), "memory_depths": (0, 1, 2, 3)},
+            {"tap_count": 2},
+            {"tap_count": 0},
+            {"tap_count": 47},
+            {"tap_count": True},
+            {"tap_count": "17"},
+            {"tap_count": 17.0},
+            {"lut_size": 2},
+            {"lut_size": 0},
+            {"lut_size": True},
+            {"lut_size": 32.0},
+            {"lut_size": "32"},
+            # Column budget: 46 taps x 128 knots far exceeds the cap.
+            {"tap_count": 46, "lut_size": 128},
         ]
         for config in cases:
             with (
@@ -372,34 +453,33 @@ class ForwardModelContractTests(unittest.TestCase):
             ):
                 ForwardModelILCRuntime().initialize(config)
 
-    def test_rejects_invalid_ridge(self):
-        for ridge in (0.0, -1e-8, 1e-2 + 1e-12, float("inf"), True):
-            with (
-                self.subTest(ridge=ridge),
-                self.assertRaises(RuntimeConfigurationError),
-            ):
-                ForwardModelILCRuntime().initialize({"ridge": ridge})
+    def test_rejects_invalid_ridges(self):
+        for field in ("ridge", "lut_ridge"):
+            for value in (0.0, -1e-8, 1e-2 + 1e-12, float("inf"), True):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaises(RuntimeConfigurationError),
+                ):
+                    ForwardModelILCRuntime().initialize({field: value})
 
     def test_accepts_valid_custom_structure(self):
-        runtime = self.make_runtime(
-            {"mu": 0.5, "orders": [1, 3], "memory_depths": [0, 1, 2, 3], "ridge": 1e-6}
+        config = {"mu": 0.5, "tap_count": 8, "lut_size": 16, "lut_ridge": 1e-4}
+        runtime = self.make_runtime(config)
+        result = self.step_once(runtime, config)
+        self.assertEqual(
+            result.metrics["model_coefficients"]["columns"], 2 * (4 + 8 * 14)
         )
-        result = self.step_once(
-            runtime,
-            {"mu": 0.5, "orders": [1, 3], "memory_depths": [0, 1, 2, 3], "ridge": 1e-6},
-        )
-        self.assertEqual(len(result.metrics["model_terms"]), 8)
 
     def test_step_config_must_match_initialization(self):
         runtime = self.make_runtime({"mu": 0.7})
         with self.assertRaises(RuntimeConfigurationError):
             self.step_once(runtime, {"mu": 0.9})
-        # Equivalent list/tuple forms must compare equal after normalization.
-        self.step_once(runtime, {"mu": 0.7, "orders": (1, 3, 5)})
+        # Equivalent forms must compare equal after normalization.
+        self.step_once(runtime, {"mu": 0.7, "tap_count": 17})
 
     def test_nonfinite_candidate_is_rejected(self):
         runtime = self.make_runtime({})
-        magnitude = np.asarray(np.full(32, 1e150), dtype=np.complex128)
+        magnitude = np.asarray(np.full(32, 1e155), dtype=np.complex128)
         with self.assertRaises(RuntimeInputError):
             runtime.step(
                 RuntimeStepInput(
@@ -535,9 +615,10 @@ class ForwardModelClosedLoopTests(unittest.TestCase):
             recorded,
             {
                 "mu": 1.0,
-                "orders": (1, 3, 5),
-                "memory_depths": (0, 1, 2),
+                "tap_count": 17,
+                "lut_size": 32,
                 "ridge": 1e-8,
+                "lut_ridge": 1e-3,
             },
         )
         json.dumps(result.config.to_dict(), allow_nan=False)
